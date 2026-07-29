@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 
 import psycopg2
+import psutil
 from arango import ArangoClient
 from fastapi import FastAPI
 import tomli
@@ -16,6 +17,30 @@ def load_config():
         return None
     with CONFIG_PATH.open("rb") as f:
         return tomli.load(f)
+
+
+def bytes_to_gb(value_bytes: int) -> float:
+    return round(value_bytes / (1024 ** 3), 2)
+
+
+def check_server() -> dict:
+    cpu_percent = psutil.cpu_percent(interval=0.5)
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+
+    return {
+        "cpu_percent": cpu_percent,
+        "memory": {
+            "total_gb": bytes_to_gb(mem.total),
+            "used_gb": bytes_to_gb(mem.used),
+            "percent": mem.percent,
+        },
+        "disk": {
+            "total_gb": bytes_to_gb(disk.total),
+            "used_gb": bytes_to_gb(disk.used),
+            "percent": disk.percent,
+        },
+    }
 
 
 def check_arangodb(cfg: dict) -> dict:
@@ -65,7 +90,11 @@ def check_postgresql(cfg: dict) -> dict:
 @app.get("/health")
 def health():
     config = load_config()
-    response = {"running": True, "databases": {}}
+    response = {
+        "running": True,
+        "server": check_server(),
+        "databases": {},
+    }
 
     if not config:
         response["databases"]["arangodb"] = {
