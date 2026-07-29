@@ -1,16 +1,18 @@
 # Example configuration file
 # Copy this to config.toml and fill in your real credentials
 
-[arangodb]
+[[databases]]
+type = "arangodb"
 host = "localhost"
 port = 8529
 username = "root"
-password = ""
+password = "changeme"
 database = "_system"
 
-[postgresql]
+[[databases]]
+type = "postgresql"
 host = "localhost"
 port = 5432
 username = "postgres"
-password = ""
-database = "postgres"
+password = "changeme"
+database = "awvinfra"

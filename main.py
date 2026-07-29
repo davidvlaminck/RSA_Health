@@ -1,5 +1,7 @@
+import sqlite3
 import socket
 import time
+from datetime import datetime
 from pathlib import Path
 
 import psycopg2
@@ -13,23 +15,118 @@ import tomli
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
-@app.get("/")
-def index():
-    return FileResponse("static/index.html")
-
 CONFIG_PATH = Path(__file__).parent / "config.toml"
+DB_PATH = Path(__file__).parent / "health.db"
+
+
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                cpu_percent REAL,
+                mem_used_gb REAL,
+                mem_total_gb REAL,
+                mem_percent REAL,
+                disk_used_gb REAL,
+                disk_total_gb REAL,
+                disk_percent REAL,
+                net_latency_ms REAL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS db_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                db_name TEXT NOT NULL,
+                db_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                latency_ms REAL,
+                error TEXT
+            )
+        """)
+        conn.commit()
+
+
+def save_snapshot(server: dict, net: dict, db_results: dict):
+    now = datetime.utcnow().isoformat() + "Z"
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO snapshots (timestamp, cpu_percent, mem_used_gb, mem_total_gb, mem_percent, disk_used_gb, disk_total_gb, disk_percent, net_latency_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now,
+                server.get("cpu_percent"),
+                server.get("memory", {}).get("used_gb"),
+                server.get("memory", {}).get("total_gb"),
+                server.get("memory", {}).get("percent"),
+                server.get("disk", {}).get("used_gb"),
+                server.get("disk", {}).get("total_gb"),
+                server.get("disk", {}).get("percent"),
+                net.get("latency_ms") if net.get("status") == "ok" else None,
+            ),
+        )
+        for name, info in db_results.items():
+            conn.execute(
+                """
+                INSERT INTO db_snapshots (timestamp, db_name, db_type, status, latency_ms, error)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now,
+                    name,
+                    info.get("type", "unknown"),
+                    info.get("status", "error"),
+                    info.get("latency_ms"),
+                    info.get("error"),
+                ),
+            )
+        conn.commit()
+
+
+def get_history(limit: int = 100):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT timestamp, cpu_percent, mem_percent, disk_percent, net_latency_ms
+            FROM snapshots
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+
+def get_db_history(limit: int = 100):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT timestamp, db_name, db_type, status, latency_ms
+            FROM db_snapshots
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in reversed(rows)]
 
 
 def load_config():
     if not CONFIG_PATH.exists():
-        return None
+        return []
     with CONFIG_PATH.open("rb") as f:
-        return tomli.load(f)
+        cfg = tomli.load(f)
+    return cfg.get("databases", [])
 
 
 def bytes_to_gb(value_bytes: int) -> float:
-    return round(value_bytes / (1024 ** 3), 2)
+    return round(value_bytes / (1024**3), 2)
 
 
 def check_network() -> dict:
@@ -78,85 +175,84 @@ def check_server() -> dict:
     }
 
 
-def check_arangodb(cfg: dict) -> dict:
+def check_db(cfg: dict) -> dict:
+    db_type = cfg.get("type", "unknown")
     try:
-        client = ArangoClient(
-            hosts=[f"http://{cfg['host']}:{cfg['port']}"]
-        )
-        sys_db = client.db(
-            cfg["database"],
-            username=cfg["username"],
-            password=cfg["password"],
-        )
-        start = time.perf_counter()
-        sys_db.version()
-        latency = round((time.perf_counter() - start) * 1000, 2)
-        return {
-            "status": "ok",
-            "latency_ms": latency,
-            "database": cfg["database"],
-        }
+        if db_type == "arangodb":
+            return _check_arangodb(cfg)
+        elif db_type == "postgresql":
+            return _check_postgresql(cfg)
+        return {"status": "error", "error": f"unknown type: {db_type}", "type": db_type}
     except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        return {"status": "error", "error": str(exc), "type": db_type}
 
 
-def check_postgresql(cfg: dict) -> dict:
-    try:
-        start = time.perf_counter()
-        conn = psycopg2.connect(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["username"],
-            password=cfg["password"],
-            database=cfg["database"],
-            connect_timeout=5,
-        )
-        conn.close()
-        latency = round((time.perf_counter() - start) * 1000, 2)
-        return {
-            "status": "ok",
-            "latency_ms": latency,
-            "database": cfg["database"],
-        }
-    except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+def _check_arangodb(cfg: dict) -> dict:
+    client = ArangoClient(hosts=[f"http://{cfg['host']}:{cfg['port']}"])
+    sys_db = client.db(
+        cfg["database"], username=cfg["username"], password=cfg["password"]
+    )
+    start = time.perf_counter()
+    sys_db.version()
+    latency = round((time.perf_counter() - start) * 1000, 2)
+    return {
+        "status": "ok",
+        "latency_ms": latency,
+        "database": cfg["database"],
+        "type": "arangodb",
+    }
+
+
+def _check_postgresql(cfg: dict) -> dict:
+    start = time.perf_counter()
+    conn = psycopg2.connect(
+        host=cfg["host"],
+        port=cfg["port"],
+        user=cfg["username"],
+        password=cfg["password"],
+        database=cfg["database"],
+        connect_timeout=5,
+    )
+    conn.close()
+    latency = round((time.perf_counter() - start) * 1000, 2)
+    return {
+        "status": "ok",
+        "latency_ms": latency,
+        "database": cfg["database"],
+        "type": "postgresql",
+    }
 
 
 @app.get("/health")
 def health():
+    init_db()
     config = load_config()
+    server = check_server()
+    net = check_network()
     response = {
         "running": True,
-        "server": check_server(),
-        "network": check_network(),
+        "server": server,
+        "network": net,
         "databases": {},
     }
 
-    if not config:
-        response["databases"]["arangodb"] = {
-            "status": "not_configured",
-            "error": "config.toml not found",
-        }
-        response["databases"]["postgresql"] = {
-            "status": "not_configured",
-            "error": "config.toml not found",
-        }
-        return response
+    for db_cfg in config:
+        db_name = db_cfg.get("database", db_cfg.get("host", "unknown"))
+        response["databases"][db_name] = check_db(db_cfg)
 
-    if "arangodb" in config:
-        response["databases"]["arangodb"] = check_arangodb(config["arangodb"])
-    else:
-        response["databases"]["arangodb"] = {
-            "status": "not_configured",
-            "error": "missing [arangodb] section",
-        }
-
-    if "postgresql" in config:
-        response["databases"]["postgresql"] = check_postgresql(config["postgresql"])
-    else:
-        response["databases"]["postgresql"] = {
-            "status": "not_configured",
-            "error": "missing [postgresql] section",
-        }
-
+    save_snapshot(server, net, response["databases"])
     return response
+
+
+@app.get("/history")
+def history(limit: int = 100):
+    init_db()
+    return {
+        "snapshots": get_history(limit),
+        "db_snapshots": get_db_history(limit),
+    }
+
+
+@app.get("/")
+def index():
+    return FileResponse("static/index.html")

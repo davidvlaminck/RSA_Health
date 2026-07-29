@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Server Health</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -105,6 +106,37 @@
             font-size: 0.85rem;
             word-break: break-word;
         }
+
+        .history-section {
+            max-width: 1200px;
+            margin: 2rem auto 0;
+        }
+        .history-section h2 {
+            font-size: 1rem;
+            color: #94a3b8;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.25rem;
+        }
+        .chart-card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 1rem;
+        }
+        .chart-card h3 {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            color: #64748b;
+            margin-bottom: 0.5rem;
+        }
+        canvas {
+            max-height: 200px;
+        }
     </style>
 </head>
 <body>
@@ -129,7 +161,33 @@
         </div>
     </div>
 
+    <div class="history-section">
+        <h2>History</h2>
+        <div class="charts-grid">
+            <div class="chart-card">
+                <h3>CPU %</h3>
+                <canvas id="cpuChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <h3>Memory %</h3>
+                <canvas id="memChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <h3>Disk %</h3>
+                <canvas id="diskChart"></canvas>
+            </div>
+        </div>
+    </div>
+
     <script>
+        const statusBadge = document.getElementById('status-badge');
+        const serverContent = document.getElementById('server-content');
+        const networkContent = document.getElementById('network-content');
+        const dbContent = document.getElementById('db-content');
+        const updatedEl = document.getElementById('updated');
+
+        let cpuChart, memChart, diskChart;
+
         function pctColor(pct) {
             if (pct < 70) return 'ok';
             if (pct < 90) return 'warn';
@@ -143,12 +201,6 @@
         }
 
         function renderSection(data) {
-            if (data.cpu_percent !== undefined) {
-                const color = pctColor(data.cpu_percent);
-                return `
-                    <div class="metric"><span class="label">CPU</span><span class="value ${color}">${data.cpu_percent}%</span></div>
-                `;
-            }
             if (data.memory) {
                 const color = pctColor(data.memory.percent);
                 return `
@@ -167,20 +219,20 @@
         }
 
         function render(data) {
-            const badge = document.getElementById('status-badge');
             const dbEntries = data.databases || {};
             const dbKeys = Object.keys(dbEntries);
             const anyDbError = dbKeys.some(k => dbEntries[k].status === 'error');
 
-            badge.textContent = data.running ? 'Running' : 'Stopped';
-            badge.className = 'status ' + (data.running && !anyDbError ? 'ok' : 'error');
+            statusBadge.textContent = data.running ? 'Running' : 'Stopped';
+            statusBadge.className = 'status ' + (data.running && !anyDbError ? 'ok' : 'error');
 
-            document.getElementById('updated').textContent = 'Updated: ' + new Date().toLocaleString();
+            updatedEl.textContent = 'Updated: ' + new Date().toLocaleString();
 
             const server = data.server || {};
             let serverHtml = '';
             if (server.cpu_percent !== undefined) {
-                serverHtml += renderSection(server);
+                const color = pctColor(server.cpu_percent);
+                serverHtml += `<div class="metric"><span class="label">CPU</span><span class="value ${color}">${server.cpu_percent}%</span></div>`;
             }
             if (server.memory) {
                 serverHtml += renderSection(server.memory);
@@ -188,7 +240,7 @@
             if (server.disk) {
                 serverHtml += renderSection(server.disk);
             }
-            document.getElementById('server-content').innerHTML = serverHtml || 'No data';
+            serverContent.innerHTML = serverHtml || 'No data';
 
             const net = data.network || {};
             let netHtml = '';
@@ -205,7 +257,7 @@
                     <div class="error-box">${net.error || 'Unknown'}</div>
                 `;
             }
-            document.getElementById('network-content').innerHTML = netHtml;
+            networkContent.innerHTML = netHtml;
 
             let dbHtml = '';
             for (const [name, info] of Object.entries(dbEntries)) {
@@ -220,16 +272,105 @@
                     dbHtml += `<div class="error-box">${info.error}</div>`;
                 }
             }
-            document.getElementById('db-content').innerHTML = dbHtml || 'No databases configured';
+            dbContent.innerHTML = dbHtml || 'No databases configured';
+        }
+
+        function updateCharts(history) {
+            const snapshots = history?.snapshots || [];
+            const labels = snapshots.map(s => {
+                const d = new Date(s.timestamp);
+                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            });
+            const cpuData = snapshots.map(s => s.cpu_percent ?? null);
+            const memData = snapshots.map(s => s.mem_percent ?? null);
+            const diskData = snapshots.map(s => s.disk_percent ?? null);
+
+            const makeColor = (val) => {
+                if (val === null || val === undefined) return '#64748b';
+                if (val < 70) return '#059669';
+                if (val < 90) return '#d97706';
+                return '#dc2626';
+            };
+
+            const createDataset = (data, label) => ({
+                data,
+                borderColor: '#38bdf8',
+                backgroundColor: 'rgba(56,189,248,0.1)',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.3,
+                fill: true,
+            });
+
+            const makeChart = (ctx, data, label, color) => ({
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [createDataset(data, label)],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 0 },
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: {
+                            ticks: { color: '#64748b', maxTicksLimit: 6, font: { size: 10 } },
+                            grid: { color: '#1e293b' },
+                        },
+                        y: {
+                            min: 0,
+                            max: 100,
+                            ticks: { color: '#64748b', font: { size: 10 } },
+                            grid: { color: '#1e293b' },
+                        },
+                    },
+                },
+                plugins: [{
+                    id: 'pointColor',
+                    afterDatasetDraw(chart, args, options) {
+                        const ctx = chart.ctx;
+                        const ds = chart.data.datasets[0];
+                        chart.data.labels.forEach((_, i) => {
+                            const val = ds.data[i];
+                            if (val === null || val === undefined) return;
+                            const x = chart.getDatasetMeta(0).data[i]?.x;
+                            const y = chart.getDatasetMeta(0).data[i]?.y;
+                            if (x === undefined) return;
+                            ctx.beginPath();
+                            ctx.arc(x, y, 3, 0, 2 * Math.PI);
+                            ctx.fillStyle = makeColor(val);
+                            ctx.fill();
+                        });
+                    }
+                }],
+            });
+
+            const cpuCtx = document.getElementById('cpuChart');
+            const memCtx = document.getElementById('memChart');
+            const diskCtx = document.getElementById('diskChart');
+
+            if (cpuChart) cpuChart.destroy();
+            if (memChart) memChart.destroy();
+            if (diskChart) diskChart.destroy();
+
+            cpuChart = new Chart(cpuCtx, makeChart(cpuCtx, cpuData, 'CPU %', '#38bdf8'));
+            memChart = new Chart(memCtx, makeChart(memCtx, memData, 'Memory %', '#34d399'));
+            diskChart = new Chart(diskCtx, makeChart(diskCtx, diskData, 'Disk %', '#fbbf24'));
         }
 
         async function load() {
             try {
-                const res = await fetch('/health');
-                const data = await res.json();
-                render(data);
+                const [healthRes, historyRes] = await Promise.all([
+                    fetch('/health'),
+                    fetch('/history?limit=50'),
+                ]);
+                const healthData = await healthRes.json();
+                const historyData = await historyRes.json();
+                render(healthData);
+                updateCharts(historyData);
             } catch (e) {
-                document.getElementById('server-content').innerHTML = '<div class="error-box">Failed to load health data</div>';
+                serverContent.innerHTML = '<div class="error-box">Failed to load health data</div>';
             }
         }
 
