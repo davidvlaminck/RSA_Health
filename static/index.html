@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server Health</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        .header h1 {
+            font-size: 1.8rem;
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+        .header .status {
+            display: inline-block;
+            margin-top: 0.5rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        .status.ok { background: #05966922; color: #34d399; border: 1px solid #05966944; }
+        .status.error { background: #dc262622; color: #f87171; border: 1px solid #dc262644; }
+
+        .updated {
+            text-align: center;
+            color: #64748b;
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.25rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 1.25rem;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+        }
+        .card h2 {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #94a3b8;
+            margin-bottom: 0.75rem;
+            font-weight: 600;
+        }
+
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #1e293b;
+        }
+        .metric:last-child { border-bottom: none; }
+        .metric .label { color: #94a3b8; font-size: 0.9rem; }
+        .metric .value { font-weight: 600; font-size: 0.95rem; }
+        .value.ok { color: #34d399; }
+        .value.error { color: #f87171; }
+        .value.warn { color: #fbbf24; }
+
+        .bar {
+            width: 100%;
+            height: 6px;
+            background: #334155;
+            border-radius: 3px;
+            margin-top: 0.4rem;
+            overflow: hidden;
+        }
+        .bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+        .bar-fill.ok { background: #059669; }
+        .bar-fill.warn { background: #d97706; }
+        .bar-fill.error { background: #dc2626; }
+
+        .error-box {
+            background: #7f1d1d22;
+            border: 1px solid #dc262644;
+            color: #fca5a5;
+            padding: 0.75rem;
+            border-radius: 8px;
+            margin-top: 0.5rem;
+            font-size: 0.85rem;
+            word-break: break-word;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Server Health Dashboard</h1>
+        <div id="status-badge" class="status">Loading...</div>
+        <div class="updated" id="updated"></div>
+    </div>
+
+    <div class="dashboard">
+        <div class="card" id="server-card">
+            <h2>Server</h2>
+            <div id="server-content">Loading...</div>
+        </div>
+        <div class="card" id="network-card">
+            <h2>Network</h2>
+            <div id="network-content">Loading...</div>
+        </div>
+        <div class="card" id="db-card">
+            <h2>Databases</h2>
+            <div id="db-content">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+        function pctColor(pct) {
+            if (pct < 70) return 'ok';
+            if (pct < 90) return 'warn';
+            return 'error';
+        }
+
+        function renderBar(value, total) {
+            const pct = total ? Math.round((value / total) * 100) : 0;
+            const color = pctColor(pct);
+            return `<div class="bar"><div class="bar-fill ${color}" style="width:${pct}%"></div></div>`;
+        }
+
+        function renderSection(data) {
+            if (data.cpu_percent !== undefined) {
+                const color = pctColor(data.cpu_percent);
+                return `
+                    <div class="metric"><span class="label">CPU</span><span class="value ${color}">${data.cpu_percent}%</span></div>
+                `;
+            }
+            if (data.memory) {
+                const color = pctColor(data.memory.percent);
+                return `
+                    <div class="metric"><span class="label">Memory</span><span class="value ${color}">${data.memory.used_gb} / ${data.memory.total_gb} GB (${data.memory.percent}%)</span></div>
+                    ${renderBar(data.memory.used_gb, data.memory.total_gb)}
+                `;
+            }
+            if (data.disk) {
+                const color = pctColor(data.disk.percent);
+                return `
+                    <div class="metric"><span class="label">Disk</span><span class="value ${color}">${data.disk.used_gb} / ${data.disk.total_gb} GB (${data.disk.percent}%)</span></div>
+                    ${renderBar(data.disk.used_gb, data.disk.total_gb)}
+                `;
+            }
+            return '';
+        }
+
+        function render(data) {
+            const badge = document.getElementById('status-badge');
+            const dbEntries = data.databases || {};
+            const dbKeys = Object.keys(dbEntries);
+            const anyDbError = dbKeys.some(k => dbEntries[k].status === 'error');
+
+            badge.textContent = data.running ? 'Running' : 'Stopped';
+            badge.className = 'status ' + (data.running && !anyDbError ? 'ok' : 'error');
+
+            document.getElementById('updated').textContent = 'Updated: ' + new Date().toLocaleString();
+
+            const server = data.server || {};
+            let serverHtml = '';
+            if (server.cpu_percent !== undefined) {
+                serverHtml += renderSection(server);
+            }
+            if (server.memory) {
+                serverHtml += renderSection(server.memory);
+            }
+            if (server.disk) {
+                serverHtml += renderSection(server.disk);
+            }
+            document.getElementById('server-content').innerHTML = serverHtml || 'No data';
+
+            const net = data.network || {};
+            let netHtml = '';
+            if (net.status === 'ok') {
+                const color = pctColor(Math.min(net.latency_ms / 100, 100));
+                netHtml = `
+                    <div class="metric"><span class="label">Target</span><span class="value">${net.target}</span></div>
+                    <div class="metric"><span class="label">Status</span><span class="value ok">OK</span></div>
+                    <div class="metric"><span class="label">Latency</span><span class="value ${color}">${net.latency_ms} ms</span></div>
+                `;
+            } else {
+                netHtml = `
+                    <div class="metric"><span class="label">Status</span><span class="value error">Error</span></div>
+                    <div class="error-box">${net.error || 'Unknown'}</div>
+                `;
+            }
+            document.getElementById('network-content').innerHTML = netHtml;
+
+            let dbHtml = '';
+            for (const [name, info] of Object.entries(dbEntries)) {
+                const color = info.status === 'ok' ? 'ok' : 'error';
+                dbHtml += `
+                    <div class="metric"><span class="label">${name}</span><span class="value ${color}">${info.status.toUpperCase()}</span></div>
+                `;
+                if (info.latency_ms !== undefined) {
+                    dbHtml += `<div class="metric"><span class="label">Latency</span><span class="value">${info.latency_ms} ms</span></div>`;
+                }
+                if (info.error) {
+                    dbHtml += `<div class="error-box">${info.error}</div>`;
+                }
+            }
+            document.getElementById('db-content').innerHTML = dbHtml || 'No databases configured';
+        }
+
+        async function load() {
+            try {
+                const res = await fetch('/health');
+                const data = await res.json();
+                render(data);
+            } catch (e) {
+                document.getElementById('server-content').innerHTML = '<div class="error-box">Failed to load health data</div>';
+            }
+        }
+
+        load();
+        setInterval(load, 5000);
+    </script>
+</body>
+</html>

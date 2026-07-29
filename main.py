@@ -6,9 +6,17 @@ import psycopg2
 import psutil
 from arango import ArangoClient
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 import tomli
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/")
+def index():
+    return FileResponse("static/index.html")
 
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 
