@@ -11,3 +11,11 @@ This repository serves two main goals:
 ```bash
 uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+## Configuration
+
+Create a `config.toml` based on `config.example.toml` and add your database credentials. The file is ignored by git.
+
+```bash
+cp config.example.toml config.toml
+```
