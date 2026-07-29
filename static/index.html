@@ -114,8 +114,33 @@
         .history-section h2 {
             font-size: 1rem;
             color: #94a3b8;
-            margin-bottom: 1rem;
+            margin-bottom: 0.5rem;
             font-weight: 600;
+        }
+        .filters {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+        .filters button {
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: #94a3b8;
+            padding: 0.4rem 0.9rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+        .filters button:hover {
+            border-color: #64748b;
+            color: #e2e8f0;
+        }
+        .filters button.active {
+            background: #2563eb22;
+            border-color: #2563eb88;
+            color: #60a5fa;
         }
         .charts-grid {
             display: grid;
@@ -163,6 +188,14 @@
 
     <div class="history-section">
         <h2>History</h2>
+        <div class="filters">
+            <button data-range="5m">5m</button>
+            <button data-range="1h" class="active">1h</button>
+            <button data-range="12h">12h</button>
+            <button data-range="1d">1d</button>
+            <button data-range="7d">7d</button>
+            <button data-range="1mo">1mo</button>
+        </div>
         <div class="charts-grid">
             <div class="chart-card">
                 <h3>CPU %</h3>
@@ -187,6 +220,21 @@
         const updatedEl = document.getElementById('updated');
 
         let cpuChart, memChart, diskChart;
+        let currentRange = '1h';
+
+        function setRange(range) {
+            currentRange = range;
+            document.querySelectorAll('.filters button').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.range === range);
+            });
+        }
+
+        document.querySelectorAll('.filters button').forEach(btn => {
+            btn.addEventListener('click', () => {
+                setRange(btn.dataset.range);
+                updateChartsOnly();
+            });
+        });
 
         function pctColor(pct) {
             if (pct < 70) return 'ok';
@@ -363,7 +411,7 @@
             try {
                 const [healthRes, historyRes] = await Promise.all([
                     fetch('/health'),
-                    fetch('/history?limit=50'),
+                    fetch(`/history?range=${currentRange}&limit=500`),
                 ]);
                 const healthData = await healthRes.json();
                 const historyData = await historyRes.json();
@@ -371,6 +419,16 @@
                 updateCharts(historyData);
             } catch (e) {
                 serverContent.innerHTML = '<div class="error-box">Failed to load health data</div>';
+            }
+        }
+
+        async function updateChartsOnly() {
+            try {
+                const historyRes = await fetch(`/history?range=${currentRange}&limit=500`);
+                const historyData = await historyRes.json();
+                updateCharts(historyData);
+            } catch (e) {
+                console.error('Failed to load history:', e);
             }
         }
 

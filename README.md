@@ -12,6 +12,8 @@ This repository serves two main goals:
 uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
+Then visit `http://<server-ip>:8000/` — any path redirects to the dashboard (`/`), while `/health` and `/history` remain accessible as API endpoints.
+
 ## Configuration
 
 Create a `config.toml` based on `config.example.toml` and add your database credentials. The file is ignored by git.

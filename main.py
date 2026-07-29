@@ -1,19 +1,17 @@
 import sqlite3
 import socket
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import psycopg2
 import psutil
 from arango import ArangoClient
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, RedirectResponse
 import tomli
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 DB_PATH = Path(__file__).parent / "health.db"
@@ -87,34 +85,60 @@ def save_snapshot(server: dict, net: dict, db_results: dict):
         conn.commit()
 
 
-def get_history(limit: int = 100):
+def get_history(limit: int = 100, after: str | None = None):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
+        query = """
             SELECT timestamp, cpu_percent, mem_percent, disk_percent, net_latency_ms
             FROM snapshots
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+        """
+        params = []
+        if after:
+            query += " WHERE timestamp >= ?"
+            params.append(after)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in reversed(rows)]
 
 
-def get_db_history(limit: int = 100):
+def get_db_history(limit: int = 100, after: str | None = None):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            """
+        query = """
             SELECT timestamp, db_name, db_type, status, latency_ms
             FROM db_snapshots
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+        """
+        params = []
+        if after:
+            query += " WHERE timestamp >= ?"
+            params.append(after)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in reversed(rows)]
+
+
+RANGE_MAP = {
+    "5m": timedelta(minutes=5),
+    "1h": timedelta(hours=1),
+    "12h": timedelta(hours=12),
+    "1d": timedelta(days=1),
+    "7d": timedelta(days=7),
+    "1mo": timedelta(days=30),
+}
+
+
+@app.get("/history")
+def history(range: str = "1h", limit: int = 1000):
+    init_db()
+    delta = RANGE_MAP.get(range, timedelta(hours=1))
+    after = (datetime.utcnow() - delta).isoformat() + "Z"
+    return {
+        "range": range,
+        "snapshots": get_history(limit, after=after),
+        "db_snapshots": get_db_history(limit, after=after),
+    }
 
 
 def load_config():
@@ -244,15 +268,11 @@ def health():
     return response
 
 
-@app.get("/history")
-def history(limit: int = 100):
-    init_db()
-    return {
-        "snapshots": get_history(limit),
-        "db_snapshots": get_db_history(limit),
-    }
-
-
 @app.get("/")
 def index():
     return FileResponse("static/index.html")
+
+
+@app.get("/{full_path:path}")
+def redirect_all(full_path: str):
+    return RedirectResponse(url="/")
