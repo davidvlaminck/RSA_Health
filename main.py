@@ -1,3 +1,4 @@
+import socket
 import time
 from pathlib import Path
 
@@ -21,6 +22,32 @@ def load_config():
 
 def bytes_to_gb(value_bytes: int) -> float:
     return round(value_bytes / (1024 ** 3), 2)
+
+
+def check_network() -> dict:
+    targets = [
+        ("1.1.1.1", 53),
+        ("8.8.8.8", 53),
+    ]
+
+    for host, port in targets:
+        try:
+            start = time.perf_counter()
+            with socket.create_connection((host, port), timeout=3):
+                latency = round((time.perf_counter() - start) * 1000, 2)
+            return {
+                "target": f"{host}:{port}",
+                "status": "ok",
+                "latency_ms": latency,
+            }
+        except Exception:
+            continue
+
+    return {
+        "target": targets[0],
+        "status": "error",
+        "error": "all targets unreachable",
+    }
 
 
 def check_server() -> dict:
@@ -93,6 +120,7 @@ def health():
     response = {
         "running": True,
         "server": check_server(),
+        "network": check_network(),
         "databases": {},
     }
 
