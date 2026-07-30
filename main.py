@@ -9,6 +9,7 @@ import psutil
 from arango import ArangoClient
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import BaseModel
 import tomli
 
 app = FastAPI()
@@ -44,6 +45,19 @@ def init_db():
                 error TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                phase TEXT,
+                status TEXT,
+                updated_at DATETIME,
+                message TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT OR IGNORE INTO pipeline_state (id, phase, status, updated_at, message) VALUES (?, ?, ?, ?, ?)",
+            (1, "idle", "completed", datetime.utcnow().isoformat() + "Z", ""),
+        )
         conn.commit()
 
 
@@ -117,6 +131,36 @@ def get_db_history(limit: int = 100, after: str | None = None):
         params.append(limit)
         rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in reversed(rows)]
+
+
+def ensure_pipeline_state():
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT id FROM pipeline_state WHERE id = 1").fetchone()
+        if not row:
+            conn.execute(
+                "INSERT INTO pipeline_state (id, phase, status, updated_at, message) VALUES (?, ?, ?, ?, ?)",
+                (1, "idle", "completed", datetime.utcnow().isoformat() + "Z", ""),
+            )
+            conn.commit()
+
+
+def get_pipeline_state():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT phase, status, updated_at, message FROM pipeline_state WHERE id = 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def update_pipeline_state(phase: str, status: str, message: str = ""):
+    now = datetime.utcnow().isoformat() + "Z"
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE pipeline_state SET phase = ?, status = ?, updated_at = ?, message = ? WHERE id = 1",
+            (phase, status, now, message),
+        )
+        conn.commit()
 
 
 RANGE_MAP = {
@@ -266,6 +310,31 @@ def health():
 
     save_snapshot(server, net, response["databases"])
     return response
+
+
+class PipelineUpdate(BaseModel):
+    phase: str
+    status: str
+    message: str = ""
+
+
+@app.get("/pipeline/state")
+def pipeline_state():
+    init_db()
+    ensure_pipeline_state()
+    state = get_pipeline_state()
+    return state or {}
+
+
+@app.post("/pipeline/update")
+def pipeline_update(payload: PipelineUpdate):
+    init_db()
+    ensure_pipeline_state()
+    valid_statuses = {"running", "completed", "failed", "aborted"}
+    if payload.status not in valid_statuses:
+        return {"error": f"invalid status: {payload.status}"}
+    update_pipeline_state(payload.phase, payload.status, payload.message)
+    return {"ok": True}
 
 
 @app.get("/")
