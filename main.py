@@ -1,5 +1,7 @@
 import sqlite3
 import socket
+import subprocess
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -161,6 +163,82 @@ def update_pipeline_state(phase: str, status: str, message: str = ""):
             (phase, status, now, message),
         )
         conn.commit()
+
+
+def run_arango_sync(timeout_seconds: int = 3600):
+    script_path = Path(__file__).parent.parent / "InfraDbToArangoDb" / "main_linux_arango.py"
+    if not script_path.exists():
+        return {"success": False, "message": f"Arango script niet gevonden: {script_path}"}
+
+    python_exe = sys.executable or "python3"
+    update_pipeline_state("arango_sync", "running", "Arango sync gestart")
+
+    try:
+        process = subprocess.Popen(
+            [python_exe, str(script_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as e:
+        update_pipeline_state("arango_sync", "failed", f"Kon script niet starten: {e}")
+        return {"success": False, "message": str(e)}
+
+    start_time = time.time()
+    last_step = ""
+
+    try:
+        for line in process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+
+            if "Current DB step:" in line:
+                last_step = line.split("Current DB step:", 1)[1].strip()
+                update_pipeline_state("arango_sync", "running", f"Stap: {last_step}")
+            elif "[0] Creating" in line:
+                update_pipeline_state("arango_sync", "running", "Database aan het creëren")
+            elif "[1] Filling" in line:
+                update_pipeline_state("arango_sync", "running", "Database vullen")
+            elif "[2] Do some additional" in line:
+                update_pipeline_state("arango_sync", "running", "Bijkomende data vullen")
+            elif "[3] Adding indices" in line:
+                update_pipeline_state("arango_sync", "running", "Indices en graphs aanmaken")
+            elif "[4] Applying constraints" in line:
+                update_pipeline_state("arango_sync", "running", "Constraints toepassen")
+            elif "[5] Synchronising" in line:
+                update_pipeline_state("arango_sync", "running", "Synchroniseren")
+            elif "[6] Stopping" in line:
+                update_pipeline_state("arango_sync", "running", "Afsluiten")
+            elif "finished_at" in line:
+                update_pipeline_state("arango_sync", "completed", "Arango sync voltooid")
+
+            if time.time() - start_time > timeout_seconds:
+                process.kill()
+                process.wait()
+                update_pipeline_state(
+                    "arango_sync",
+                    "failed",
+                    f"Timeout na {timeout_seconds}s (laatste stap: {last_step or 'onbekend'})",
+                )
+                return {"success": False, "message": f"Timeout na {timeout_seconds} seconden"}
+
+        return_code = process.returncode
+        if return_code == 0:
+            update_pipeline_state("arango_sync", "completed", "Arango sync voltooid")
+            return {"success": True, "message": "Sync voltooid"}
+        update_pipeline_state("arango_sync", "failed", f"Script eindigde met code {return_code}")
+        return {"success": False, "message": f"Script eindigde met code {return_code}"}
+
+    except Exception as e:
+        try:
+            process.kill()
+            process.wait()
+        except Exception:
+            pass
+        update_pipeline_state("arango_sync", "failed", f"Fout: {e}")
+        return {"success": False, "message": str(e)}
 
 
 RANGE_MAP = {
