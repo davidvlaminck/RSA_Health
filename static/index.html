@@ -41,6 +41,23 @@
             margin-top: 0.5rem;
         }
 
+        #update-bar {
+            position: fixed;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            height: 3px;
+            background: #38bdf8;
+            width: 100%;
+            animation: shrink 5s linear forwards;
+            z-index: 1000;
+        }
+
+        @keyframes shrink {
+            from { width: 100%; opacity: 1; }
+            to { width: 0%; opacity: 0.25; }
+        }
+
         .dashboard {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -165,6 +182,7 @@
     </style>
 </head>
 <body>
+    <div id="update-bar"></div>
     <div class="header">
         <h1>Server Health Dashboard</h1>
         <div id="status-badge" class="status">Loading...</div>
@@ -172,6 +190,10 @@
     </div>
 
     <div class="dashboard">
+        <div class="card" id="pipeline-card">
+            <h2>Pipeline Status</h2>
+            <div id="pipeline-content">Loading...</div>
+        </div>
         <div class="card" id="server-card">
             <h2>Server</h2>
             <div id="server-content">Loading...</div>
@@ -217,6 +239,7 @@
         const serverContent = document.getElementById('server-content');
         const networkContent = document.getElementById('network-content');
         const dbContent = document.getElementById('db-content');
+        const pipelineContent = document.getElementById('pipeline-content');
         const updatedEl = document.getElementById('updated');
 
         let cpuChart, memChart, diskChart;
@@ -266,7 +289,7 @@
             return '';
         }
 
-        function render(data) {
+        function render(data, pipeline) {
             const dbEntries = data.databases || {};
             const dbKeys = Object.keys(dbEntries);
             const anyDbError = dbKeys.some(k => dbEntries[k].status === 'error');
@@ -275,6 +298,22 @@
             statusBadge.className = 'status ' + (data.running && !anyDbError ? 'ok' : 'error');
 
             updatedEl.textContent = 'Updated: ' + new Date().toLocaleString();
+
+            let pipelineHtml = '';
+            if (pipeline) {
+                const statusClass = pipeline.status === 'completed' ? 'ok' : pipeline.status === 'failed' || pipeline.status === 'aborted' ? 'error' : 'warn';
+                pipelineHtml += `
+                    <div class="metric"><span class="label">Phase</span><span class="value">${pipeline.phase || 'idle'}</span></div>
+                    <div class="metric"><span class="label">Status</span><span class="value ${statusClass}">${(pipeline.status || 'unknown').toUpperCase()}</span></div>
+                    <div class="metric"><span class="label">Updated</span><span class="value">${pipeline.updated_at ? new Date(pipeline.updated_at).toLocaleString() : '-'}</span></div>
+                `;
+                if (pipeline.message) {
+                    pipelineHtml += `<div class="error-box">${pipeline.message}</div>`;
+                }
+            } else {
+                pipelineHtml = 'No pipeline data';
+            }
+            pipelineContent.innerHTML = pipelineHtml;
 
             const server = data.server || {};
             let serverHtml = '';
@@ -407,15 +446,26 @@
             diskChart = new Chart(diskCtx, makeChart(diskCtx, diskData, 'Disk %', '#fbbf24'));
         }
 
+        function triggerUpdateBar() {
+            const existing = document.getElementById('update-bar');
+            if (existing) existing.remove();
+            const bar = document.createElement('div');
+            bar.id = 'update-bar';
+            document.body.prepend(bar);
+        }
+
         async function load() {
+            triggerUpdateBar();
             try {
-                const [healthRes, historyRes] = await Promise.all([
+                const [healthRes, historyRes, pipelineRes] = await Promise.all([
                     fetch('/health'),
                     fetch(`/history?range=${currentRange}&limit=500`),
+                    fetch('/pipeline/state'),
                 ]);
                 const healthData = await healthRes.json();
                 const historyData = await historyRes.json();
-                render(healthData);
+                const pipelineData = await pipelineRes.json();
+                render(healthData, pipelineData);
                 updateCharts(historyData);
             } catch (e) {
                 serverContent.innerHTML = '<div class="error-box">Failed to load health data</div>';

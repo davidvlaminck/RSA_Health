@@ -1,7 +1,7 @@
 import sqlite3
 import socket
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg2
@@ -56,13 +56,13 @@ def init_db():
         """)
         conn.execute(
             "INSERT OR IGNORE INTO pipeline_state (id, phase, status, updated_at, message) VALUES (?, ?, ?, ?, ?)",
-            (1, "idle", "completed", datetime.utcnow().isoformat() + "Z", ""),
+            (1, "idle", "completed", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), ""),
         )
         conn.commit()
 
 
 def save_snapshot(server: dict, net: dict, db_results: dict):
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
@@ -139,7 +139,7 @@ def ensure_pipeline_state():
         if not row:
             conn.execute(
                 "INSERT INTO pipeline_state (id, phase, status, updated_at, message) VALUES (?, ?, ?, ?, ?)",
-                (1, "idle", "completed", datetime.utcnow().isoformat() + "Z", ""),
+                (1, "idle", "completed", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), ""),
             )
             conn.commit()
 
@@ -154,7 +154,7 @@ def get_pipeline_state():
 
 
 def update_pipeline_state(phase: str, status: str, message: str = ""):
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "UPDATE pipeline_state SET phase = ?, status = ?, updated_at = ?, message = ? WHERE id = 1",
