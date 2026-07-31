@@ -112,10 +112,12 @@ Voorbeelden:
 - drive_download_completed
 - arango_running
 - arango_completed
-- postgis_stopped
+- postgis_sync_pausing
+- postgis_sync_paused
 - rsa_running
 - rsa_completed
-- postgis_running
+- postgis_sync_resuming
+- postgis_sync_running
 - drive_upload_completed
 - completed
 - failed
@@ -124,17 +126,17 @@ Voorbeelden:
 
 ## PostGIS Specifieke Situatie
 
-PostGIS draait overdag continu als systemd-service.
+PostGIS (de PostgreSQL-database) draait continu als systemd-service en blijft altijd draaien. De database wordt niet gestopt of gestart tijdens de nachtelijke verwerking.
 
-Tijdens de nachtelijke verwerking wordt deze tijdelijk gestopt zodat RSA-query's veilig kunnen draaien.
+Wat wel gebeurt, is dat het PostGIS-syncscript (AWVInfraPostGISSyncer) zijn schrijfactiviteit tijdelijk pauzeert. RSA leest tijdens de rapportagenesis uit PostGIS; terwijl RSA leest, willen we voorkomen dat het syncscript gelijktijdig nieuwe data schrijft. Daarom pauzeert het syncscript alleen, niet de database.
 
-Daarom wordt PostGIS beschouwd als onderdeel van de pipeline.
+PostGIS wordt daarmee beschouwd als onderdeel van de pipeline — zowel als continue service, als via het pauzeren/hervatten van de sync.
 
 Workflow:
 
-Arango klaar → PostGIS stoppen → RSA uitvoeren → PostGIS starten → Upload
+Arango klaar → PostGIS-sync pauzeren → RSA uitvoeren → PostGIS-sync hervatten → Upload
 
-Na elke actie moet gecontroleerd worden of de gewenste toestand effectief bereikt werd.
+Na elke actie moet gecontroleerd worden of de gewenste toestand effectief bereikt werd. Het syncscript heeft een interne time-out: als de orchestrator nooit signaal geeft om te hervatten, hervat het syncscript vanzelf na een maximaal pauzetijd (bv. 4 uur) zodat de sync niet vastloopt.
 
 ---
 
@@ -169,12 +171,16 @@ Mogelijke fases:
 - sharepoint_to_drive
 - drive_download
 - arango_sync
-- postgis_stopping
-- postgis_stopped
+- postgis_sync_pausing
+- postgis_sync_paused
 - rsa_queries
-- postgis_starting
-- postgis_running
+- postgis_sync_resuming
+- postgis_sync_running
 - drive_upload
+- drive_to_sharepoint
+
+Onafhankelijke services (rapporteer status, eigen logging): `arango_sync`, `postgis_sync`, `rsa_queries`.
+Orchestrator-coördineerde fasen: `sharepoint_to_drive`, `drive_download`, `postgis_sync_pausing/resuming`, `drive_upload`, `drive_to_sharepoint`.
 
 Mogelijke statuswaarden:
 
@@ -205,17 +211,29 @@ De SQLite database wordt de centrale bron van waarheid voor de pipeline-status.
 Voorbeeld:
 
 ```text
-arango completed
+sharepoint_to_drive  completed  (Power Automate marker; RSA_Health detecteert)
 ↓
-postgis stoppen
+drive_download       running    (orchestrator start: sync_drive_to_local)
 ↓
-postgis stopped
+drive_download       completed  (of: failed)
 ↓
-rsa starten
+arango_sync          completed  (onafhankelijke service rapporteert)
 ↓
-rsa completed
+postgis_sync         pausing    (orchestrator signaleert: fase = postgis_sync_pausing)
 ↓
-postgis starten
+postgis_sync         paused     (syncscript rapporteert: fase = postgis_sync_paused)
+↓
+rsa_queries          running    (onafhankelijke service; wachtt op drive_download + paused)
+↓
+rsa_queries          completed  (RSA rapporteert zelf via PipelineStatusReporter)
+↓
+postgis_sync         resuming   (orchestrator signaleert: fase = postgis_sync_resuming)
+↓
+postgis_sync         running    (syncscript hervat; rapporteert fase = postgis_sync_running)
+↓
+drive_upload         completed  (orchestrator: sync_local_to_drive)
+↓
+drive_to_sharepoint  completed  (Power Automate marker; einde cyclus)
 ```
 
 Belangrijke richtlijnen:
@@ -286,11 +304,11 @@ Health pagina uitbreiden:
 
 ### Stap 4
 
-Arango script integreren met statusupdates.
+Arango sync (arangolooprunner.py) integreren met statusupdates: signaleer `arango_sync` running bij start en `arango_sync` completed/failed bij einde. Het script blijft een onafhankelijke service draaien; de orchestrator wacht op de statussignaal in plaats van het script zelf te starten.
 
 ### Stap 5
 
-RSA script integreren met statusupdates.
+RSA (ReportLoopRunner) volgt hetzelfde patroon als postgis_sync en arango_sync: onafhankelijke service met eigen logging, die zijn status rapporteert via `PipelineStatusReporter` aan `/pipeline/update`. RSA wacht intern op de voorwaarden in `pipeline_state` (drive_download completed en postgis_sync gepauseerd) voordat rapportage start; de orchestrator start RSA niet zelf.
 
 ### Stap 6
 
@@ -298,11 +316,95 @@ Power Automate integreren via FastAPI endpoint.
 
 ### Stap 7
 
-PostGIS integreren zodat deze rapporteert wanneer ze stopt en opnieuw actief is.
+PostGIS-syncscript (AWVInfraPostGISSyncer) integreren: rapporteer `postgis_sync` running tijdens normaal bewerken. Voeg een pauze/hervat mechanisme toe: lees fase `postgis_sync_pausing` / `postgis_sync_resuming` uit `pipeline_state` en onderbreek het schrijven tot `postgis_sync_paused` / `postgis_sync_running` wordt gerapporteerd. De PostgreSQL-database zelf wordt niet gestopt.
 
 ### Stap 8
 
-Optioneel: eenvoudige orchestrator toevoegen die de volgende stap start op basis van pipeline_state in plaats van vaste tijdstippen.
+Eenvoudige orchestrator toevoegen (achtergrond-taak in RSA_Health) die de volgende stappen coördineert op basis van `pipeline_state` in plaats van vaste tijdstippen, met timeouts en idempotentie:
+
+- **drive_download**: orchestrator voert `sync_drive_to_local` uit en rapporteert `drive_download` completed/failed.
+- **drive_upload**: orchestrator voert `sync_local_to_drive` uit en rapporteert `drive_upload` completed/failed.
+- **sequencing**: orchestrator observeert `arango_sync`, `postgis_sync`, `rsa_queries` (allemaal onafhankelijke services) en signaleert `postgis_sync_pausing`/`resuming`.
+- **power automate markers**: detecteer `sharepoint_to_drive` en `drive_to_sharepoint` marker-bestanden op Google Drive en zet die om naar `pipeline_state`.
+
+---
+
+## Implementatielagen en Services
+
+De componenten zijn opgedeeld in drie lagen. De databases en de orchestrator blijven **altijd** als service draaien. De sync-scripts blijven onafhankelijke services, maar rapporteren hun status (en respecteren pauze-signaling) aan de orchestrator.
+
+```text
+                    ┌──────────────────────────────────────────────┐
+                    │  rsa-health (FastAPI)  ← systemd service      │
+                    │  - /health, /history                          │
+                    │  - /pipeline/update, /pipeline/state          │
+                    │  - achtergrond-orchestrator (stap 8)          │
+                    │  - health-monitoring loop                   │
+                    └────────────────────┬─────────────────────────┘
+                                         │ rapporteert via pipeline_state
+                                         │ (SQLite: health.db)
+           ┌─────────────────────────────┼─────────────────────────────┐
+           │                             │                             │
+           ▼                             ▼                             ▼
+┌────────────────────┐      ┌─────────────────────┐      ┌──────────────────────┐
+│ PostGIS-sync       │      │ Arango-sync         │      │ RSA (reports)        │
+│ (SyncManager)      │      │ (arangolooprunner)  │      │ (ReportLoopRunner)   │
+│ - systemd service  │      │ - systemd service   │      │ - systemd service    │
+│ - schrijft data    │      │ - start 03:00       │      │ - binnen run-window  │
+│ - pauzeren via   │      │ - rapporteert       │      │ - rapporteert        │
+│   pipeline_state   │      │   status via /upd   │      │   status via /upd    │
+└────────────────────┘      └─────────────────────┘      └──────────────────────┘
+           ▲
+           │ schrijft/leest
+           ▼
+┌─────────────────────┐
+│ PostGIS (PostgreSQL)│  ← systemd service, NIET stoppen
+└─────────────────────┘
+           ▲
+           │ leest (RSA)
+           ▼
+┌─────────────────────┐
+│ ArangoDB (arangod)  │  ← systemd service
+└─────────────────────┘
+```
+
+### Volledige nachtelijke sequentie (signal-based)
+
+Elke component draait onafhankelijk als service en rapporteert zijn status via
+`POST /pipeline/update` (of marker-bestanden voor Power Automate). De orchestrator
+observeert `pipeline_state` in SQLite en coördineert alleen de overgangen en de
+drive-stappen.
+
+[00:00] Power Automate            marker: sharepoint_to_drive
+[00:01] Orchestrator              marker gedetecteerd -> sharepoint_to_drive / completed
+[00:02] Orchestrator              start sync_drive_to_local -> drive_download / running
+[00:30] Orchestrator              drive_download / completed   (of: failed -> stop)
+          ~ wachtt op arango_sync = completed (max. T1) ~
+[03:00] Arango-sync (onafhankelijk) start -> arango_sync / running
+[...]   Arango-sync               rapporteert vordering: "stap: ..." per sub-stap
+[04:45] Arango-sync               arango_sync / completed
+[05:30] Orchestrator              ziet 'completed' -> postgis_sync_pausing / running
+[05:31] PostGIS-sync              ziet 'pausing' -> onderbreekt schrijven -> postgis_sync_paused / completed
+          ~ wachtt op 'paused' (max. T2) ~
+[05:32] RSA (onafhankelijk)       ziet drive_download=completed + paused -> rsa_queries / running
+[...]   RSA                       rapporteert via PipelineStatusReporter
+[07:00] RSA                       rsa_queries / completed
+          ~ wachtt op 'completed' (max. T3) ~
+[07:01] Orchestrator              postgis_sync_resuming / running (signaal)
+[07:02] PostGIS-sync              ziet 'resuming' -> hervat schrijven -> postgis_sync_running / completed
+[07:05] Orchestrator              start sync_local_to_drive -> drive_upload / running
+[07:10] Orchestrator              drive_upload / completed
+[10:00] Power Automate            marker: drive_to_sharepoint
+[10:01] Orchestrator              marker gedetecteerd -> drive_to_sharepoint / completed (einde cyclus)
+[midnight] Orchestrator            reset naar starttoestand -> (idle / completed)
+
+timeouts -> faalt: arango_sync (T1) | postgis_sync_paused (T2) | rsa_queries (T3)
+autonome hervatting: PostGIS-sync hervat vanzelf na max. 4 uur, zonder orchestrator-signaal
+
+> Belangrijk verschil t.o.v. trigger-model: Arango-sync, PostGIS-sync en RSA draaien
+> onafhankelijk en rapporteren hun status; de orchestrator observeert `pipeline_state` en
+> coördineert alleen de overgangen (pauz. en hervat van PostGIS-sync) én de drive-stappen.
+> Als de orchestrator crasht, blijven de jobs draaien; de volgende run reset om middernacht.
 
 # Aanvulling: Integratie van Power Automate in de Pipeline Workflow
 
