@@ -107,6 +107,10 @@ Elke component schrijft direct naar `pipeline_state` in SQLite. De orchestrator 
 deze tabel en coördineert alleen de overgangen en de drive-stappen. Arango-sync, PostGIS-sync
 en RSA draaien onafhankelijk; de orchestrator wacht steeds met een timeout op het verwachte signaal.
 
+De orchestrator draait als **afzonderlijke service** (`lib/orchestrator.py`).
+De FastAPI-app start de orchestrator standaard **niet** mee. Dit kan via de
+`ORCHESTRATOR_ENABLED` environment variable als ze alsnog samen willen draaien.
+
 ```text
 00:00  Power Automate            kopiert SharePoint → Drive
 00:30  Power Automate            marker: sharepoint_to_drive
@@ -384,7 +388,8 @@ Eenvoudige orchestrator toevoegen (achtergrond-taak in RSA_Health) die de volgen
 
 ## Implementatielagen en Services
 
-De componenten zijn opgedeeld in drie lagen. De databases en de orchestrator blijven **altijd** als service draaien. De sync-scripts blijven onafhankelijke services, maar rapporteren hun status (en respecteren pauze-signaling) aan de orchestrator.
+De componenten zijn opgedeeld in twee diensten die beide als systemd-service draaien.
+Ze delen dezelfde `health.db` SQLite-database voor `pipeline_state`.
 
 ```text
                     ┌───────────────────────────────────────────────┐
@@ -393,15 +398,15 @@ De componenten zijn opgedeeld in drie lagen. De databases en de orchestrator bli
                     │  - achtergrond-orchestrator (stap 8)          │
                     └────────────────────┬──────────────────────────┘
                                          │ pipeline_state (SQLite: health.db)
-          ┌──────────────┬───────────────┼──────────────┬─────────────┐
-          ▼              ▼               ▼              ▼             ▼
-┌────────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐
-│ Power Automate │ │ Arango-sync  │ │ PostGIS-sync │ │ RSA (ReportLoop)     │
-│ (SP <-> Drive) │ │ schrijft ->  │ │ schrijft ->  │ │ leest -> ArangoDB +  │
-│ marker files   │ │ ArangoDB     │ │ PostGIS      │ │          -> PostGIS  │
-│ (extern)       │ │ rapporteert  │ │ + pauw/resume│ │ rapporteert          │
-│                │ │ status       │ │ via state    │ │ rsa_queries          │
-└────────────────┘ └──────────────┘ └──────────────┘ └──────────────────────┘
+          ┌──────────────┬───────────────┼───────────────────────────┐
+          ▼              ▼               ▼                           ▼
+┌────────────────┐ ┌──────────────┐ ┌───────────────┐ ┌──────────────────────┐
+│ Power Automate │ │ Arango-sync  │ │ PostGIS-sync  │ │ RSA (ReportLoop)     │
+│ (SP <-> Drive) │ │ schrijft ->  │ │ schrijft ->   │ │ leest -> ArangoDB +  │
+│ marker files   │ │ ArangoDB     │ │ PostGIS       │ │       -> PostGIS     │
+│ (extern)       │ │ rapporteert  │ │ + pause/resume│ │ rapporteert          │
+│                │ │ status       │ │ via state     │ │ rsa_queries          │
+└────────────────┘ └──────────────┘ └───────────────┘ └──────────────────────┘
                          │ schrijft          │ schrijft         │ leest (RSA)
                          ▼                   ▼                  │
               ┌──────────────────┐  ┌─────────────────────┐     │
@@ -417,7 +422,7 @@ De componenten zijn opgedeeld in drie lagen. De databases en de orchestrator bli
 ### Volledige nachtelijke sequentie (signal-based)
 
 Elke component draait onafhankelijk als service en rapporteert zijn status via
-`POST /pipeline/update` (of marker-bestanden voor Power Automate). De orchestrator
+directe SQLite-updates (of marker-bestanden voor Power Automate). De orchestrator
 observeert `pipeline_state` in SQLite en coördineert alleen de overgangen en de
 drive-stappen. Arango-sync, PostGIS-sync en RSA draaien onafhankelijk; de
 orchestrator wacht steeds met een timeout op het verwachte signaal.

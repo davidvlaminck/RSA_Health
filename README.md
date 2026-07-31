@@ -24,20 +24,16 @@ orchestrator (in een apart proces) nog altijd functioneren.
 
 ### Orchestrator
 
-De orchestrator observeert `pipeline_state` en coördineert de overgangen. Hij loopt als
-achtergrond-thread binnen de FastAPI service (zie hieronder), of kan apart draaien.
+De orchestrator observeert `pipeline_state` en coördineert de overgangen. Hij draait
+als **afzonderlijke service** (zie hieronder). De FastAPI-app start de orchestrator
+niet standaard — dit kan via de `ORCHESTRATOR_ENABLED` environment variable als ze
+alsnog samen willen draaien.
 
 ## Pipeline Orchestrator
 
-De orchestrator is een background thread die **binnen dezelfde process** als de FastAPI
-application draait (`rsa-health`). Hij wordt automatisch gestart bij opstarten via FastAPI's
-`lifespan` mechanismus (`PipelineOrchestrator` class in `main.py`) en stopt bij afsluiten.
-
-### Hoe het werkt
-
-De orchestrator observeert de `pipeline_state` tabel in `health.db` (SQLite). Hij is
-**signaal-gebaseerd** — externe services rapporteren hun status via directe SQLite-updates,
-en de orchestrator reageert op die statussen om de volgende stap te coördineren.
+De orchestrator draait als **afzonderlijke service**. Hij observeert de
+`pipeline_state` tabel in `health.db` (SQLite) en coördineert de overgangen.
+Externe services rapporteren hun status via directe SQLite-updates.
 
 Pipeline-fases (volgorde):
 
@@ -57,14 +53,24 @@ Timeouts:
 | rsa_queries               | 3 uur   |                                               |
 | postgis_sync_running      | 10 min  |                                               |
 
-### Apart draaien (optioneel)
+### RSA Health (FastAPI service)
 
-Als je de orchestrator liever als **aparte systemd-service** wilt laten draaien:
+```bash
+uv run uvicorn main:app --host 0.0.0.0 --port 8000
+```
 
-1. Start `rsa-health` zonder orchestrator, óf
-2. Draai de orchestrator in een eigen process.
+Bezoek `http://<server-ip>:8000/` — elk pad redirect naar het dashboard (`/`), terwijl
+`/health` en `/history` toegankelijk blijven als API endpoints.
 
-Voorbeeld systemd-service (`/etc/systemd/system/rsa-health-orchestrator.service`):
+De orchestrator wordt **niet** gestart als onderdeel van deze service.
+
+### Pipeline Orchestrator (losse service)
+
+```bash
+uv run python -m lib.orchestrator --db health.db
+```
+
+Met systemd (`/etc/systemd/system/rsa-health-orchestrator.service`):
 
 ```ini
 [Unit]
@@ -75,7 +81,7 @@ After=network.target
 Type=simple
 User=rsahealth
 WorkingDirectory=/opt/RSA_Health
-ExecStart=/opt/RSA_Health/.venv/bin/python -m main --orchestrator-only
+ExecStart=/opt/RSA_Health/.venv/bin/python -m lib.orchestrator --db /opt/RSA_Health/health.db
 Restart=on-failure
 RestartSec=10
 
@@ -90,8 +96,21 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now rsa-health-orchestrator.service
 ```
 
-Opmerking: indien apart gedraaid, moet ook de hoofd-`rsa-health` service actief zijn. Ze
-delen dezelfde `health.db` SQLite-database voor `pipeline_state`.
+### Samen draaien (optioneel)
+
+Als je de orchestrator wél als onderdeel van de FastAPI service wilt starten,
+zet dan `ORCHESTRATOR_ENABLED=true`:
+
+```bash
+ORCHESTRATOR_ENABLED=true uv run uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+### Opmerking
+
+Alle services delen dezelfde `health.db` SQLite-database voor `pipeline_state`.
+Als de orchestrator crasht, blijven de andere services (Arango-sync, PostGIS-sync,
+RSA) hun status rapporteren. De orchestrator kan na herstart de pipeline
+volledig hervatten.
 
 ## Running
 
