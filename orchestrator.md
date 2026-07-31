@@ -60,43 +60,77 @@ Mogelijke statussen:
 
 ---
 
-## FastAPI Endpoint
+## Communicatie: directe SQLite-toegang
 
-Er wordt een generiek endpoint voorzien:
+Elke component van de pipeline schrijft zijn status **rechtstreeks** naar de SQLite-database
+(`health.db` → tabel `pipeline_state`). Er is geen tussenkomst van een HTTP-API nodig.
 
-POST /pipeline/update
+Reden: als de `rsa-health` API down zou zijn, moet de rest van de pipeline nog steeds kunnen
+functioneren. De API is alleen bedoeld voor:
+- het dashboard (`/pipeline/state`, `/health`, `/history`)
+- externe toegang (bv. Power Automate marker-bestanden via Drive)
+- handmatige diagnostiek
 
-Voorbeeld payload:
+De onderstaande diagrammen tonen de SQLite-toegang expliciet.
 
-```json
-{
-  "phase": "arango_sync",
-  "status": "running",
-  "message": "Synchronisatie gestart"
-}
+```text
+                     ┌───────────────────────────────────────────────┐
+                     │  rsa-health (FastAPI)  ← systemd service      │
+                     │  - /health, /history, /pipeline/state       │
+                     │  - achtergrond-orchestrator (stap 8)          │
+                     └────────────────────┬──────────────────────────┘
+                                          │ pipeline_state (SQLite: health.db)
+           ┌──────────────┬───────────────┼──────────────┬─────────────┐
+           ▼              ▼               ▼              ▼             ▼
+┌────────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────────────┐
+│ Power Automate │ │ Arango-sync  │ │ PostGIS-sync │ │ RSA (ReportLoop)     │
+│ (SP <-> Drive) │ │ schrijft ->  │ │ schrijft ->  │ │ leest -> ArangoDB +  │
+│ marker files   │ │ ArangoDB     │ │ PostGIS      │ │          -> PostGIS  │
+│ (extern)       │ │ (direct SQL) │ │ (direct SQL) │ │ (direct SQL)         │
+│                │ │ rapporteert  │ │ + pauw/resume│ │ rapporteert          │
+└────────────────┘ └──────────────┘ └──────────────┘ └──────────────────────┘
+                          │ schrijft          │ schrijft         │ leest (RSA)
+                          ▼                   ▼                  │
+               ┌──────────────────┐  ┌─────────────────────┐     │
+               │ ArangoDB         │  │ PostGIS (PostgreSQL)│     │
+               │ (arangod service)│  │ (systemd service)   │     │
+               │ NIET stoppen     │  │ NIET stoppen        │     │
+               └──────────────────┘  └─────────────────────┘     │
+                        ▲                     ▲                  │
+                        └─────────────────────┴──────────────────┘
+                                 RSA leest beide databases
 ```
 
-Alle componenten gebruiken hetzelfde endpoint:
+### Volledige nachtelijke sequentie (signal-based)
 
-- Arango script
-- RSA script
-- Power Automate
-- Eventuele toekomstige scripts
+Elke component schrijft direct naar `pipeline_state` in SQLite. De orchestrator observeert
+deze tabel en coördineert alleen de overgangen en de drive-stappen. Arango-sync, PostGIS-sync
+en RSA draaien onafhankelijk; de orchestrator wacht steeds met een timeout op het verwachte signaal.
 
----
-
-## Health Pagina
-
-De health pagina leest om de paar seconden de huidige pipeline-status.
-
-Voorbeeld:
-
-- Fase: RSA Queries
-- Status: Running
-- Sinds: 05:42
-- Laatste update: 05:43
-
-Omdat de status in SQLite wordt bewaard, wordt deze automatisch ook opgenomen in de historiek.
+```text
+00:00  Power Automate            kopiert SharePoint → Drive
+00:30  Power Automate            marker: sharepoint_to_drive
+00:31  Orchestrator              marker gedetecteerd → sharepoint_to_drive / completed
+00:31  Orchestrator              start sync_drive_to_local → drive_download / running
+00:35  Orchestrator              drive_download / completed   (of: failed → stop)
+        ~ wacht op arango_sync = completed (T1; in de normale loop geen time-out) ~
+03:00  Arango-sync (onafhankelijk) start → arango_sync / running
+        ~ rapporteert vordering per sub-stap (fase blijft running) ~
+04:45  Arango-sync               arango_sync / completed
+04:50  Orchestrator              ziet 'completed' → postgis_sync_pausing / running
+04:51  PostGIS-sync              ziet 'pausing' → onderbreekt schrijven → postgis_sync_paused / completed
+        ~ wacht op 'paused' (max. T2 ≈ 10 min; bij time-out: gaat verder zonder pause) ~
+05:00  RSA ReportLoopRunner (onafhankelijk) start query'n → rsa_queries / running
+        ~ rapporteert via PipelineStatusReporter ~
+08:00  RSA                       rsa_queries / completed   (max. T3 ≈ 3u)
+08:00  Orchestrator              → postgis_sync_resuming / running
+08:01  PostGIS-sync              ziet 'resuming' → hervat schrijven → postgis_sync_running / completed
+08:02  Orchestrator              start sync_local_to_drive → drive_upload / running
+08:10  Orchestrator              drive_upload / completed
+08:10+ Power Automate            kopiert Drive → SharePoint (start pollend)
+10:00  Orchestrator              marker gedetecteerd → drive_to_sharepoint / completed (einde cyclus)
+midnight  Orchestrator            reset → (idle / completed)
+```
 
 ---
 
@@ -261,9 +295,28 @@ Indien de vorige nacht vastgelopen is, vormt dit geen blokkade voor de volgende 
 
 ---
 
-## Implementatiestappen
+## Implementatiestatus
 
-### Stap 1
+De volgende tabel geeft de voortgang per implementatiestap:
+
+| Stap | Omschrijving | Status | Details |
+|------|-------------|--------|---------|
+| 1 | SQLite `pipeline_state` tabel | ✅ Gereed | Tabel bestaat in `main.py` (init_db). Initiële rij `idle/completed`. |
+| 2 | FastAPI endpoint `POST /pipeline/update` | ✅ Gereed | Bestaat in `main.py` (pipeline_update). Accepteert `phase`, `status`, `message`. |
+| 3 | Health pagina uitbreiden | ✅ Gereed | `static/index.html` toont pipeline fase, status, tijdstempel en bericht. |
+| 4 | Arango sync integreren | ⚠️ Gedeeltelijk | `run_arango_sync()` in `main.py` schrijft direct naar `pipeline_state` (goed). `arangolooprunner.py` in extern project rapporteert nog niet — moet ook directe SQLite-updates doen in plaats van via API. |
+| 5 | RSA integreren | ⚠️ Gedeeltelijk | `PipelineStatusReporter` rapporteert via `/pipeline/update` (API). Ideaal: directe SQLite-updates in plaats van API-calls. |
+| 6 | Power Automate via marker-bestanden | ❌ Nog niet | Google Drive marker-file polling is een TODO-placeholder in `PipelineOrchestrator._find_drive_marker()`. |
+| 7 | PostGIS-sync integreren | ❌ Nog niet | PostGIS-sync heeft geen pauze/resume-mechanisme. TODO-placeholder in `_start_postgis_pause()`/`_start_postgis_resume()`. |
+| 8 | Orchestrator (achtergrond-taak) | ⚠️ Boilerplate geschreven | `PipelineOrchestrator` class en lifespan-startup in `main.py`. State-machine logica, timeouts, daily-reset en marker-detection zijn opgenomen. Drive-sync en PostGIS-signalen zijn placeholders. |
+
+Zie [Stap 8 — Orchestrator](#stap-8) voor details over de boilerplate-implementatie.
+
+---
+
+## Stappen
+
+### Stap 1 — ✅ Gereed
 
 SQLite uitbreiden met:
 
@@ -285,7 +338,7 @@ phase = idle
 status = completed
 ```
 
-### Stap 2
+### Stap 2 — ✅ Gereed
 
 FastAPI endpoint voorzien:
 
@@ -293,7 +346,7 @@ FastAPI endpoint voorzien:
 POST /pipeline/update
 ```
 
-### Stap 3
+### Stap 3 — ✅ Gereed
 
 Health pagina uitbreiden:
 
@@ -302,23 +355,23 @@ Health pagina uitbreiden:
 - laatste update tonen
 - foutmelding tonen
 
-### Stap 4
+### Stap 4 — ⚠️ Gedeeltelijk
 
 Arango sync (arangolooprunner.py) integreren met statusupdates: signaleer `arango_sync` running bij start en `arango_sync` completed/failed bij einde. Het script blijft een onafhankelijke service draaien; de orchestrator wacht op de statussignaal in plaats van het script zelf te starten.
 
-### Stap 5
+### Stap 5 — ✅ Gereed
 
 RSA (ReportLoopRunner) volgt hetzelfde patroon als postgis_sync en arango_sync: onafhankelijke service met eigen logging, die zijn status rapporteert via `PipelineStatusReporter` aan `/pipeline/update`. RSA wacht intern op de voorwaarden in `pipeline_state` (drive_download completed en postgis_sync gepauseerd) voordat rapportage start; de orchestrator start RSA niet zelf.
 
-### Stap 6
+### Stap 6 — ❌ Nog niet
 
-Power Automate integreren via FastAPI endpoint.
+Power Automate integreren via marker-bestanden op Google Drive (zie [Aanvulling: Integratie van Power Automate](#aanvulling-integratie-van-power-automate-in-de-pipeline-workflow) hieronder).
 
-### Stap 7
+### Stap 7 — ❌ Nog niet
 
 PostGIS-syncscript (AWVInfraPostGISSyncer) integreren: rapporteer `postgis_sync` running tijdens normaal bewerken. Voeg een pauze/hervat mechanisme toe: lees fase `postgis_sync_pausing` / `postgis_sync_resuming` uit `pipeline_state` en onderbreek het schrijven tot `postgis_sync_paused` / `postgis_sync_running` wordt gerapporteerd. De PostgreSQL-database zelf wordt niet gestopt.
 
-### Stap 8
+### Stap 8 — ⚠️ Boilerplate geschreven
 
 Eenvoudige orchestrator toevoegen (achtergrond-taak in RSA_Health) die de volgende stappen coördineert op basis van `pipeline_state` in plaats van vaste tijdstippen, met timeouts en idempotentie:
 

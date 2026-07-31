@@ -1,23 +1,190 @@
-import sqlite3
 import socket
+import sqlite3
 import subprocess
 import sys
+import threading
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import psycopg2
 import psutil
+import psycopg2
+import tomli
 from arango import ArangoClient
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
-import tomli
-
-app = FastAPI()
 
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 DB_PATH = Path(__file__).parent / "health.db"
+
+PIPELINE_TIMEOUTS = {
+    "arango_sync": 4 * 3600,
+    "postgis_pause": 600,
+    "rsa_queries": 3 * 3600,
+    "postgis_resume": 600,
+}
+
+POLL_INTERVAL_SECONDS = 30
+
+
+class PipelineOrchestrator:
+    TIMEOUT_ARANGO = PIPELINE_TIMEOUTS["arango_sync"]
+    TIMEOUT_POSTGIS_PAUSE = PIPELINE_TIMEOUTS["postgis_pause"]
+    TIMEOUT_RSA = PIPELINE_TIMEOUTS["rsa_queries"]
+    TIMEOUT_POSTGIS_RESUME = PIPELINE_TIMEOUTS["postgis_resume"]
+    POLL_INTERVAL = POLL_INTERVAL_SECONDS
+
+    def __init__(self):
+        self.running = False
+        self._thread = None
+        self._wait_phase = None
+        self._wait_status = None
+        self._wait_deadline = 0
+        self._wait_timeout = 0
+        self._last_reset_date = None
+
+    def start(self):
+        self.running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self.running = False
+
+    def _loop(self):
+        while self.running:
+            try:
+                self._tick()
+            except Exception as exc:
+                pipeline.update("orchestrator", "failed", f"Fout: {exc}")
+            time.sleep(self.POLL_INTERVAL)
+
+    def _tick(self):
+        self._daily_reset_check()
+        state = pipeline.get()
+        if not state:
+            return
+        phase = state.get("phase", "idle")
+        status = state.get("status", "completed")
+
+        if self._is_waiting():
+            if phase == self._wait_phase and status == self._wait_status:
+                self._clear_wait()
+            elif time.time() > self._wait_deadline:
+                timed_out = self._wait_phase
+                timeout_val = self._wait_timeout
+                self._clear_wait()
+                pipeline.update(
+                    timed_out or "orchestrator",
+                    "failed",
+                    f"Timeout na {timeout_val}s wachten op {timed_out}",
+                )
+            return
+
+        if phase == "idle" and status == "completed":
+            self._check_sharepoint_marker()
+        elif phase == "sharepoint_to_drive" and status == "completed":
+            self._start_drive_download()
+        elif phase == "drive_download" and status == "completed":
+            self._wait_for("arango_sync", "completed", self.TIMEOUT_ARANGO)
+        elif phase == "arango_sync" and status == "completed":
+            self._start_postgis_pause()
+        elif phase == "postgis_sync_pausing" and status == "running":
+            self._wait_for(
+                "postgis_sync_paused", "completed", self.TIMEOUT_POSTGIS_PAUSE
+            )
+        elif phase == "postgis_sync_paused" and status == "completed":
+            self._wait_for("rsa_queries", "completed", self.TIMEOUT_RSA)
+        elif phase == "rsa_queries" and status == "completed":
+            self._start_postgis_resume()
+        elif phase == "postgis_sync_resuming" and status == "running":
+            self._wait_for(
+                "postgis_sync_running", "completed", self.TIMEOUT_POSTGIS_RESUME
+            )
+        elif phase == "postgis_sync_running" and status == "completed":
+            self._start_drive_upload()
+        elif phase == "drive_upload" and status == "completed":
+            self._check_drive_to_sharepoint_marker()
+
+    def _is_waiting(self):
+        return self._wait_phase is not None
+
+    def _wait_for(self, phase, status, timeout):
+        self._wait_phase = phase
+        self._wait_status = status
+        self._wait_deadline = time.time() + timeout
+        self._wait_timeout = timeout
+        pipeline.update(
+            "orchestrator", "running", f"Wachten op {phase}={status}"
+        )
+
+    def _clear_wait(self):
+        self._wait_phase = None
+        self._wait_status = None
+        self._wait_deadline = 0
+        self._wait_timeout = 0
+
+    def _check_sharepoint_marker(self):
+        marker = self._find_drive_marker("sharepoint_to_drive", "completed")
+        if marker:
+            pipeline.update(
+                "sharepoint_to_drive", "completed", "Marker gedetecteerd"
+            )
+
+    def _check_drive_to_sharepoint_marker(self):
+        marker = self._find_drive_marker("drive_to_sharepoint", "completed")
+        if marker:
+            pipeline.update(
+                "drive_to_sharepoint", "completed", "Marker gedetecteerd"
+            )
+
+    def _find_drive_marker(self, phase, expected_status):
+        # TODO: Google Drive API polling voor markerbestanden
+        # Marker-formaat: YYYY-MM-DD_<phase>.<status>
+        return None
+
+    def _start_drive_download(self):
+        # TODO: implement sync_drive_to_local
+        pipeline.update("drive_download", "running", "Drive download gestart")
+
+    def _start_drive_upload(self):
+        # TODO: implement sync_local_to_drive
+        pipeline.update("drive_upload", "running", "Drive upload gestart")
+
+    def _start_postgis_pause(self):
+        # TODO: signal PostGIS sync to pause (write fase to pipeline_state)
+        pipeline.update(
+            "postgis_sync_pausing", "running", "PostGIS-sync pauzeren"
+        )
+
+    def _start_postgis_resume(self):
+        # TODO: signal PostGIS sync to resume
+        pipeline.update(
+            "postgis_sync_resuming", "running", "PostGIS-sync hervatten"
+        )
+
+    def _daily_reset_check(self):
+        now = datetime.now(timezone.utc)
+        if now.hour == 0 and self._last_reset_date != now.date():
+            self._last_reset_date = now.date()
+            pipeline.update("idle", "completed", "Dagelijkse reset")
+
+
+orchestrator = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global orchestrator
+    orchestrator = PipelineOrchestrator()
+    orchestrator.start()
+    yield
+    orchestrator.stop()
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def init_db():
@@ -135,34 +302,9 @@ def get_db_history(limit: int = 100, after: str | None = None):
         return [dict(row) for row in reversed(rows)]
 
 
-def ensure_pipeline_state():
-    with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute("SELECT id FROM pipeline_state WHERE id = 1").fetchone()
-        if not row:
-            conn.execute(
-                "INSERT INTO pipeline_state (id, phase, status, updated_at, message) VALUES (?, ?, ?, ?, ?)",
-                (1, "idle", "completed", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), ""),
-            )
-            conn.commit()
+from lib.pipeline_state import PipelineState
 
-
-def get_pipeline_state():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT phase, status, updated_at, message FROM pipeline_state WHERE id = 1"
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def update_pipeline_state(phase: str, status: str, message: str = ""):
-    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            "UPDATE pipeline_state SET phase = ?, status = ?, updated_at = ?, message = ? WHERE id = 1",
-            (phase, status, now, message),
-        )
-        conn.commit()
+pipeline = PipelineState(DB_PATH)
 
 
 def run_arango_sync(timeout_seconds: int = 3600):
@@ -171,7 +313,7 @@ def run_arango_sync(timeout_seconds: int = 3600):
         return {"success": False, "message": f"Arango script niet gevonden: {script_path}"}
 
     python_exe = sys.executable or "python3"
-    update_pipeline_state("arango_sync", "running", "Arango sync gestart")
+    pipeline.update("arango_sync", "running", "Arango sync gestart")
 
     try:
         process = subprocess.Popen(
@@ -182,7 +324,7 @@ def run_arango_sync(timeout_seconds: int = 3600):
             bufsize=1,
         )
     except Exception as e:
-        update_pipeline_state("arango_sync", "failed", f"Kon script niet starten: {e}")
+        pipeline.update("arango_sync", "failed", f"Kon script niet starten: {e}")
         return {"success": False, "message": str(e)}
 
     start_time = time.time()
@@ -196,28 +338,28 @@ def run_arango_sync(timeout_seconds: int = 3600):
 
             if "Current DB step:" in line:
                 last_step = line.split("Current DB step:", 1)[1].strip()
-                update_pipeline_state("arango_sync", "running", f"Stap: {last_step}")
+                pipeline.update("arango_sync", "running", f"Stap: {last_step}")
             elif "[0] Creating" in line:
-                update_pipeline_state("arango_sync", "running", "Database aan het creëren")
+                pipeline.update("arango_sync", "running", "Database aan het creëren")
             elif "[1] Filling" in line:
-                update_pipeline_state("arango_sync", "running", "Database vullen")
+                pipeline.update("arango_sync", "running", "Database vullen")
             elif "[2] Do some additional" in line:
-                update_pipeline_state("arango_sync", "running", "Bijkomende data vullen")
+                pipeline.update("arango_sync", "running", "Bijkomende data vullen")
             elif "[3] Adding indices" in line:
-                update_pipeline_state("arango_sync", "running", "Indices en graphs aanmaken")
+                pipeline.update("arango_sync", "running", "Indices en graphs aanmaken")
             elif "[4] Applying constraints" in line:
-                update_pipeline_state("arango_sync", "running", "Constraints toepassen")
+                pipeline.update("arango_sync", "running", "Constraints toepassen")
             elif "[5] Synchronising" in line:
-                update_pipeline_state("arango_sync", "running", "Synchroniseren")
+                pipeline.update("arango_sync", "running", "Synchroniseren")
             elif "[6] Stopping" in line:
-                update_pipeline_state("arango_sync", "running", "Afsluiten")
+                pipeline.update("arango_sync", "running", "Afsluiten")
             elif "finished_at" in line:
-                update_pipeline_state("arango_sync", "completed", "Arango sync voltooid")
+                pipeline.update("arango_sync", "completed", "Arango sync voltooid")
 
             if time.time() - start_time > timeout_seconds:
                 process.kill()
                 process.wait()
-                update_pipeline_state(
+                pipeline.update(
                     "arango_sync",
                     "failed",
                     f"Timeout na {timeout_seconds}s (laatste stap: {last_step or 'onbekend'})",
@@ -226,9 +368,9 @@ def run_arango_sync(timeout_seconds: int = 3600):
 
         return_code = process.returncode
         if return_code == 0:
-            update_pipeline_state("arango_sync", "completed", "Arango sync voltooid")
+            pipeline.update("arango_sync", "completed", "Arango sync voltooid")
             return {"success": True, "message": "Sync voltooid"}
-        update_pipeline_state("arango_sync", "failed", f"Script eindigde met code {return_code}")
+        pipeline.update("arango_sync", "failed", f"Script eindigde met code {return_code}")
         return {"success": False, "message": f"Script eindigde met code {return_code}"}
 
     except Exception as e:
@@ -237,7 +379,7 @@ def run_arango_sync(timeout_seconds: int = 3600):
             process.wait()
         except Exception:
             pass
-        update_pipeline_state("arango_sync", "failed", f"Fout: {e}")
+        pipeline.update("arango_sync", "failed", f"Fout: {e}")
         return {"success": False, "message": str(e)}
 
 
@@ -399,20 +541,24 @@ class PipelineUpdate(BaseModel):
 @app.get("/pipeline/state")
 def pipeline_state():
     init_db()
-    ensure_pipeline_state()
-    state = get_pipeline_state()
+    pipeline.ensure()
+    state = pipeline.get()
     return state or {}
 
 
 @app.post("/pipeline/update")
 def pipeline_update(payload: PipelineUpdate):
     init_db()
-    ensure_pipeline_state()
+    pipeline.ensure()
     valid_statuses = {"running", "completed", "failed", "aborted"}
     if payload.status not in valid_statuses:
         return {"error": f"invalid status: {payload.status}"}
-    update_pipeline_state(payload.phase, payload.status, payload.message)
+    pipeline.update(payload.phase, payload.status, payload.message)
     return {"ok": True}
+
+# NOTE: scripts that run in the same process (or have filesystem access to health.db)
+# SHOULD call pipeline.update() directly instead of POSTing to this endpoint.
+# This endpoint exists for external tools (Power Automate, diagnostics) only.
 
 
 @app.get("/")
