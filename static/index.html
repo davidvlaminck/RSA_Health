@@ -179,6 +179,23 @@
         canvas {
             max-height: 200px;
         }
+        .log-btn {
+            display: block;
+            width: 100%;
+            margin-top: 0.5rem;
+            padding: 0.6rem;
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: #94a3b8;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            text-align: left;
+        }
+        .log-btn:hover {
+            border-color: #64748b;
+            color: #e2e8f0;
+        }
     </style>
 </head>
 <body>
@@ -205,6 +222,14 @@
         <div class="card" id="db-card">
             <h2>Databases</h2>
             <div id="db-content">Loading...</div>
+        </div>
+        <div class="card" id="logs-card">
+            <h2>Logs</h2>
+            <div id="logs-content">
+                <button class="log-btn" data-log="arangodb_fill">ArangoDB Fill Log</button>
+                <button class="log-btn" data-log="postgresql_fill">PostgreSQL Fill Log</button>
+                <button class="log-btn" data-log="rsa_fill">RSA Fill Log</button>
+            </div>
         </div>
     </div>
 
@@ -244,6 +269,13 @@
 
         let cpuChart, memChart, diskChart;
         let currentRange = '1h';
+
+        document.querySelectorAll('.log-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const logKey = btn.dataset.log;
+                window.location.href = `/logs/${logKey}`;
+            });
+        });
 
         function setRange(range) {
             currentRange = range;

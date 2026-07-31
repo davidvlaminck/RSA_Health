@@ -265,10 +265,10 @@ def history(range: str = "1h", limit: int = 1000):
 
 def load_config():
     if not CONFIG_PATH.exists():
-        return []
+        return [], {}
     with CONFIG_PATH.open("rb") as f:
         cfg = tomli.load(f)
-    return cfg.get("databases", [])
+    return cfg.get("databases", []), cfg.get("logs", {})
 
 
 def bytes_to_gb(value_bytes: int) -> float:
@@ -372,7 +372,7 @@ def _check_postgresql(cfg: dict) -> dict:
 @app.get("/health")
 def health():
     init_db()
-    config = load_config()
+    config, _ = load_config()
     server = check_server()
     net = check_network()
     response = {
@@ -418,6 +418,29 @@ def pipeline_update(payload: PipelineUpdate):
 @app.get("/")
 def index():
     return FileResponse("static/index.html")
+
+
+LOG_LABELS = {
+    "arangodb_fill": "ArangoDB Fill Log",
+    "postgresql_fill": "PostgreSQL Fill Log",
+    "rsa_fill": "RSA Fill Log",
+}
+
+
+@app.get("/logs/{log_key}")
+def download_log(log_key: str):
+    _, logs = load_config()
+    path = logs.get(log_key)
+    if not path:
+        return {"error": "log not configured"}
+    file_path = Path(path)
+    if not file_path.is_file():
+        return {"error": "log file not found"}
+    return FileResponse(
+        file_path,
+        filename=file_path.name,
+        media_type="text/plain",
+    )
 
 
 @app.get("/{full_path:path}")
