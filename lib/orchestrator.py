@@ -99,6 +99,7 @@ class PipelineOrchestrator:
                 "postgis_sync_paused", "completed", self.TIMEOUT_POSTGIS_PAUSE
             )
         elif phase == "postgis_sync_paused" and status == "completed":
+            self.pipeline.update("rsa_queries", "starting", "RSA queries starten")
             self._wait_for("rsa_queries", "completed", self.TIMEOUT_RSA)
         elif phase == "rsa_queries" and status == "completed":
             self._start_postgis_resume()
@@ -145,13 +146,21 @@ class PipelineOrchestrator:
         marker = self._find_drive_marker("drive_to_sharepoint", "completed")
         if marker:
             self.pipeline.update(
+                "drive_to_sharepoint", "starting", "Drive → SharePoint starten"
+            )
+            self.pipeline.update(
+                "drive_to_sharepoint", "running", "Power Automate bezig"
+            )
+            self.pipeline.update(
                 "drive_to_sharepoint", "completed", "Marker gedetecteerd"
             )
 
     def _start_drive_download(self):
+        self.pipeline.update("drive_download", "starting", "Drive download starten")
         self.pipeline.update("drive_download", "running", "Drive download gestart")
 
     def _start_drive_upload(self):
+        self.pipeline.update("drive_upload", "starting", "Drive upload starten")
         self.pipeline.update("drive_upload", "running", "Drive upload gestart")
 
     def _start_postgis_pause(self):

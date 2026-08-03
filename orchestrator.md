@@ -117,8 +117,9 @@ De FastAPI-app start de orchestrator standaard **niet** mee. Dit kan via de
 00:30  Power Automate            marker: sharepoint_to_drive.completed
 00:31  Orchestrator              .running gedetecteerd → sharepoint_to_drive / running
 00:31  Orchestrator              .completed gedetecteerd → sharepoint_to_drive / completed
-00:31  Orchestrator              start sync_drive_to_local → drive_download / running
-00:35  Orchestrator              drive_download / completed   (of: failed → stop)
+00:31  Orchestrator              start sync_drive_to_local → drive_download / starting
+00:31  RSA                       drive_download / running
+00:35  RSA                       drive_download / completed   (of: failed → stop)
         ~ wacht op arango_sync = completed (T1; in de normale loop geen time-out) ~
 03:00  Arango-sync (onafhankelijk) start → arango_sync / running
         ~ rapporteert vordering per sub-stap (fase blijft running) ~
@@ -131,10 +132,13 @@ De FastAPI-app start de orchestrator standaard **niet** mee. Dit kan via de
 08:00  RSA                       rsa_queries / completed   (max. T3 ≈ 3u)
 08:00  Orchestrator              → postgis_sync_resuming / running
 08:01  PostGIS-sync              ziet 'resuming' → hervat schrijven → postgis_sync_running / completed
-08:02  Orchestrator              start sync_local_to_drive → drive_upload / running
-08:10  Orchestrator              drive_upload / completed
+08:02  Orchestrator              start sync_local_to_drive → drive_upload / starting
+08:02  RSA                       drive_upload / running
+08:10  RSA                       drive_upload / completed
 08:10+ Power Automate            kopiert Drive → SharePoint (start pollend)
-10:00  Orchestrator              marker gedetecteerd → drive_to_sharepoint / completed (einde cyclus)
+10:00  Orchestrator              marker gedetecteerd → drive_to_sharepoint / starting
+10:00  Orchestrator              drive_to_sharepoint / running
+10:00  Orchestrator              drive_to_sharepoint / completed (einde cyclus)
 midnight  Orchestrator            reset → (idle / completed)
 ```
 
@@ -148,17 +152,24 @@ Voorbeelden:
 
 - sharepoint_to_drive_running
 - sharepoint_to_drive_completed
+- drive_download_starting
 - drive_download_running
 - drive_download_completed
-- arango_running
-- arango_completed
+- arango_sync_running
+- arango_sync_completed
 - postgis_sync_pausing
 - postgis_sync_paused
-- rsa_running
-- rsa_completed
+- rsa_queries_starting
+- rsa_queries_running
+- rsa_queries_completed
 - postgis_sync_resuming
 - postgis_sync_running
+- drive_upload_starting
+- drive_upload_running
 - drive_upload_completed
+- drive_to_sharepoint_starting
+- drive_to_sharepoint_running
+- drive_to_sharepoint_completed
 - completed
 - failed
 
@@ -224,6 +235,7 @@ Orchestrator-coördineerde fasen: `sharepoint_to_drive`, `drive_download`, `post
 
 Mogelijke statuswaarden:
 
+- starting
 - running
 - completed
 - failed
@@ -251,29 +263,45 @@ De SQLite database wordt de centrale bron van waarheid voor de pipeline-status.
 Voorbeeld:
 
 ```text
-sharepoint_to_drive  completed  (Power Automate marker; RSA_Health detecteert)
+sharepoint_to_drive  running     (Power Automate marker; RSA_Health detecteert)
 ↓
-drive_download       running    (orchestrator start: sync_drive_to_local)
+sharepoint_to_drive  completed   (Power Automate marker; RSA_Health detecteert)
 ↓
-drive_download       completed  (of: failed)
+drive_download       starting    (orchestrator signaleert: RSA start drive_download)
 ↓
-arango_sync          completed  (onafhankelijke service rapporteert)
+drive_download       running     (RSA: sync_drive_to_local)
 ↓
-postgis_sync         pausing    (orchestrator signaleert: fase = postgis_sync_pausing)
+drive_download       completed   (RSA rapporteert)
 ↓
-postgis_sync         paused     (syncscript rapporteert: fase = postgis_sync_paused)
+arango_sync          running     (onafhankelijke service rapporteert)
 ↓
-rsa_queries          running    (onafhankelijke service; wacht op drive_download + paused)
+arango_sync          completed   (onafhankelijke service rapporteert)
 ↓
-rsa_queries          completed  (RSA rapporteert zelf via PipelineStatusReporter)
+postgis_sync         pausing     (orchestrator signaleert: fase = postgis_sync_pausing)
 ↓
-postgis_sync         resuming   (orchestrator signaleert: fase = postgis_sync_resuming)
+postgis_sync         paused      (syncscript rapporteert: fase = postgis_sync_paused)
 ↓
-postgis_sync         running    (syncscript hervat; rapporteert fase = postgis_sync_running)
+rsa_queries          starting    (orchestrator signaleert: RSA start)
 ↓
-drive_upload         completed  (orchestrator: sync_local_to_drive)
+rsa_queries          running     (RSA: rapportage actief)
 ↓
-drive_to_sharepoint  completed  (Power Automate marker; einde cyclus)
+rsa_queries          completed   (RSA rapporteert zelf via PipelineStatusReporter)
+↓
+postgis_sync         resuming    (orchestrator signaleert: fase = postgis_sync_resuming)
+↓
+postgis_sync         running     (syncscript hervat; rapporteert fase = postgis_sync_running)
+↓
+drive_upload         starting    (orchestrator signaleert: RSA start drive_upload)
+↓
+drive_upload         running     (RSA: sync_local_to_drive)
+↓
+drive_upload         completed   (RSA rapporteert)
+↓
+drive_to_sharepoint  starting    (orchestrator: Power Automate start)
+↓
+drive_to_sharepoint  running     (orchestrator: Power Automate bezig)
+↓
+drive_to_sharepoint  completed   (Power Automate marker; einde cyclus)
 ```
 
 Belangrijke richtlijnen:
@@ -435,8 +463,9 @@ orchestrator wacht steeds met een timeout op het verwachte signaal.
 00:30  Power Automate            marker: sharepoint_to_drive.completed
 00:31  Orchestrator              .running gedetecteerd → sharepoint_to_drive / running
 00:31  Orchestrator              .completed gedetecteerd → sharepoint_to_drive / completed
-00:31  Orchestrator              start sync_drive_to_local → drive_download / running
-00:35  Orchestrator              drive_download / completed   (of: failed → stop)
+00:31  Orchestrator              start sync_drive_to_local → drive_download / starting
+00:31  RSA                       drive_download / running
+00:35  RSA                       drive_download / completed   (of: failed → stop)
         ~ wacht op arango_sync = completed (T1; in de normale loop geen time-out) ~
 03:00  Arango-sync (onafhankelijk) start → arango_sync / running
         ~ rapporteert vordering per sub-stap (fase blijft running) ~
@@ -444,15 +473,19 @@ orchestrator wacht steeds met een timeout op het verwachte signaal.
 04:50  Orchestrator              ziet 'completed' → postgis_sync_pausing / running
 04:51  PostGIS-sync              ziet 'pausing' → onderbreekt schrijven → postgis_sync_paused / completed
         ~ wacht op 'paused' (max. T2 ≈ 10 min; bij time-out: gaat verder zonder pause) ~
+05:00  Orchestrator              → rsa_queries / starting
 05:00  RSA ReportLoopRunner (onafhankelijk) start query'n → rsa_queries / running
         ~ rapporteert via PipelineStatusReporter ~
 08:00  RSA                       rsa_queries / completed   (max. T3 ≈ 3u)
 08:00  Orchestrator              → postgis_sync_resuming / running
 08:01  PostGIS-sync              ziet 'resuming' → hervat schrijven → postgis_sync_running / completed
-08:02  Orchestrator              start sync_local_to_drive → drive_upload / running
-08:10  Orchestrator              drive_upload / completed
+08:02  Orchestrator              start sync_local_to_drive → drive_upload / starting
+08:02  RSA                       drive_upload / running
+08:10  RSA                       drive_upload / completed
 08:10+ Power Automate            kopiert Drive → SharePoint (start pollend)
-10:00  Orchestrator              marker gedetecteerd → drive_to_sharepoint / completed (einde cyclus)
+10:00  Orchestrator              marker gedetecteerd → drive_to_sharepoint / starting
+10:00  Orchestrator              drive_to_sharepoint / running
+10:00  Orchestrator              drive_to_sharepoint / completed (einde cyclus)
 midnight  Orchestrator            reset → (idle / completed)
 ```
 
