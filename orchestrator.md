@@ -630,6 +630,14 @@ status = failed
 
 geregistreerd.
 
+Na verwerking wordt het markerbestand **verwijderd** uit de Drive-map. Dit voorkomt
+dat hetzelfde bestand bij een volgende controle opnieuw wordt verwerkt.
+
+```text
+2026-07-30_sharepoint_to_drive.running  → gevonden → status bijgewerkt → bestand verwijderd
+2026-07-30_sharepoint_to_drive.completed → gevonden → status bijgewerkt → bestand verwijderd
+```
+
 ---
 
 ## Waarom geen JSON-bestand?

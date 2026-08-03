@@ -136,11 +136,13 @@ class PipelineOrchestrator:
             self.pipeline.update(
                 "sharepoint_to_drive", "running", "Marker gedetecteerd"
             )
+            self._delete_drive_marker(running_marker)
         completed_marker = self._find_drive_marker("sharepoint_to_drive", "completed")
         if completed_marker:
             self.pipeline.update(
                 "sharepoint_to_drive", "completed", "Marker gedetecteerd"
             )
+            self._delete_drive_marker(completed_marker)
 
     def _check_drive_to_sharepoint_marker(self):
         marker = self._find_drive_marker("drive_to_sharepoint", "completed")
@@ -154,6 +156,7 @@ class PipelineOrchestrator:
             self.pipeline.update(
                 "drive_to_sharepoint", "completed", "Marker gedetecteerd"
             )
+            self._delete_drive_marker(marker)
 
     def _start_drive_download(self):
         self.pipeline.update("drive_download", "starting", "Drive download starten")
@@ -248,6 +251,15 @@ class PipelineOrchestrator:
         except Exception:
             pass
         return None
+
+    def _delete_drive_marker(self, file_id):
+        service = self._get_drive_service()
+        if not service or not file_id:
+            return
+        try:
+            service.files().delete(fileId=file_id).execute()
+        except Exception:
+            pass
 
 
 @asynccontextmanager
