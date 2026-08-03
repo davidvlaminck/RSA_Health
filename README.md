@@ -129,3 +129,37 @@ Het bestand wordt genegeerd door git.
 ```bash
 cp config.example.toml config.toml
 ```
+
+## Google Drive OAuth setup (voor Power Automate markers)
+
+De orchestrator gebruikt Google Drive om marker-bestanden te detecteren. Dit vereist een eenmalige OAuth-authenticatie.
+
+### Stap 1: Maak OAuth client credentials aan
+
+1. Ga naar [Google Cloud Console](https://console.cloud.google.com/) → project `rsa-api-492010`
+2. **APIs & Services** → **Credentials**
+3. **Create Credentials** → **OAuth client ID**
+4. Type: **Desktop app** (of **Other**)
+5. Download het JSON-bestand en sla op als bijvoorbeeld `/home/davidlinux/Documenten/AWV/resources/client_secret_RSA-API.json`
+
+### Stap 2: Voeg toe aan `config.toml`
+
+```toml
+[drive]
+credentials_file = "/home/davidlinux/Documenten/AWV/resources/client_secret_RSA-API.json"
+token_file = "/home/davidlinux/Documenten/AWV/resources/gdrive_token.pkl"
+folder_id = "je-drive-folder-id"
+poll_interval_seconds = 60
+```
+
+De `folder_id` vind je door de Drive-map `PipelineStatus/` te openen in de browser — de ID staat in de URL: `https://drive.google.com/drive/folders/<folder_id>`
+
+### Stap 3: Genereer het token (eenmalig)
+
+```bash
+uv run python -m lib.orchestrator --db health.db
+```
+
+De eerste keer opent er een browser venster. Log in met je Google-account en geef toegang. Daarna wordt het token opgeslagen in `gdrive_token.pkl` en automatisch vernieuwd.
+
+**Opmerking:** De service account aanpak (`service_account_file`) werkt niet voor persoonlijke Google-accounts. Gebruik de OAuth flow hierboven.

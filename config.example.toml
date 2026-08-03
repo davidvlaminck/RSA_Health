@@ -18,7 +18,8 @@ password = "changeme"
 database = "awvinfra"
 
 [drive]
-service_account_file = "/path/to/service-account.json"
+credentials_file = "/path/to/client_secret.json"
+token_file = "/path/to/gdrive_token.pkl"
 folder_id = "your-drive-folder-id"
 poll_interval_seconds = 60
 

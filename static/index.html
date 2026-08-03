@@ -214,6 +214,66 @@
             margin-top: 0;
             text-align: center;
         }
+        .pipeline-flow-card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+        .pipeline-flow-card h2 {
+            font-size: 1rem;
+            color: #e2e8f0;
+            margin-bottom: 0.75rem;
+        }
+        .pipeline-diagram {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            align-items: center;
+            justify-content: center;
+        }
+        .pipeline-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 8px;
+            border: 1px solid #334155;
+            background: #0f172a;
+            color: #94a3b8;
+            font-size: 0.8rem;
+            min-width: 100px;
+            text-align: center;
+            transition: all 0.3s;
+        }
+        .pipeline-step.active {
+            border-color: #2563eb;
+            background: #2563eb22;
+            color: #60a5fa;
+            box-shadow: 0 0 12px rgba(37, 99, 235, 0.3);
+        }
+        .pipeline-step.completed {
+            border-color: #059669;
+            background: #05966922;
+            color: #34d399;
+        }
+        .pipeline-step.failed {
+            border-color: #dc2626;
+            background: #dc262622;
+            color: #f87171;
+        }
+        .pipeline-step.idle {
+            border-color: #64748b;
+            background: #0f172a;
+            color: #64748b;
+        }
+        .pipeline-arrow {
+            color: #64748b;
+            font-size: 1.4rem;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -287,6 +347,11 @@
         </div>
     </div>
 
+    <div class="pipeline-flow-card">
+        <h2>Pipeline Flow</h2>
+        <div id="pipeline-diagram">Loading...</div>
+    </div>
+
     <script>
         const statusBadge = document.getElementById('status-badge');
         const serverContent = document.getElementById('server-content');
@@ -355,6 +420,49 @@
             return '';
         }
 
+        const PIPELINE_STEPS = [
+            { id: 'idle', label: 'Idle' },
+            { id: 'sharepoint_to_drive', label: 'SP → Drive' },
+            { id: 'drive_download', label: 'Drive Download' },
+            { id: 'arango_sync', label: 'Arango Sync' },
+            { id: 'postgis_sync_pausing', label: 'PostGIS Pauzeren' },
+            { id: 'postgis_sync_paused', label: 'PostGIS Gepauzeerd' },
+            { id: 'rsa_queries', label: 'RSA Queries' },
+            { id: 'postgis_sync_resuming', label: 'PostGIS Hervatten' },
+            { id: 'postgis_sync_running', label: 'PostGIS Loopt' },
+            { id: 'drive_upload', label: 'Drive Upload' },
+            { id: 'drive_to_sharepoint', label: 'Drive → SP' },
+        ];
+
+        function renderPipelineDiagram(pipeline) {
+            const container = document.getElementById('pipeline-diagram');
+            if (!container) return;
+
+            const currentPhase = pipeline?.phase || 'idle';
+            const currentStatus = pipeline?.status || 'completed';
+
+            let html = '<div class="pipeline-diagram">';
+            PIPELINE_STEPS.forEach((step, idx) => {
+                let stepClass = 'idle';
+                if (step.id === currentPhase) {
+                    stepClass = currentStatus === 'completed' ? 'completed' : currentStatus === 'failed' || currentStatus === 'aborted' ? 'failed' : 'active';
+                } else if (step.id !== 'idle') {
+                    const stepIdx = PIPELINE_STEPS.findIndex(s => s.id === currentPhase);
+                    if (stepIdx >= 0 && idx < stepIdx) {
+                        stepClass = 'completed';
+                    }
+                } else if (step.id === 'idle' && currentPhase === 'idle') {
+                    stepClass = currentStatus === 'completed' ? 'completed' : 'idle';
+                }
+                html += `<div class="pipeline-step ${stepClass}">${step.label}</div>`;
+                if (idx < PIPELINE_STEPS.length - 1) {
+                    html += '<div class="pipeline-arrow">→</div>';
+                }
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        }
+
         function render(data, pipeline) {
             const dbEntries = data.databases || {};
             const dbKeys = Object.keys(dbEntries);
@@ -380,6 +488,7 @@
                 pipelineHtml = 'No pipeline data';
             }
             pipelineContent.innerHTML = pipelineHtml;
+            renderPipelineDiagram(pipeline);
 
             const server = data.server || {};
             let serverHtml = '';
@@ -425,6 +534,7 @@
                     dbHtml += `<div class="error-box">${info.error}</div>`;
                 }
             }
+
             dbContent.innerHTML = dbHtml || 'No databases configured';
         }
 

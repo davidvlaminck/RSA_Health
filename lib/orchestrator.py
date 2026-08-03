@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -6,6 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
+
+_HERE = Path(__file__).resolve().parent
+_ROOT = _HERE.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from lib.pipeline_state import PipelineState
 
@@ -177,17 +183,36 @@ class PipelineOrchestrator:
         return drive
 
     def _get_drive_service(self):
-        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        from google_auth_oauthlib.flow import InstalledAppFlow
         from googleapiclient.discovery import build
 
         drive_cfg = self._load_drive_config()
         if not drive_cfg:
             return None
-        sa_file = drive_cfg.get("service_account_file")
-        if not sa_file or not Path(sa_file).is_file():
+        creds_file = drive_cfg.get("service_account_file") or drive_cfg.get("credentials_file")
+        if not creds_file or not Path(creds_file).is_file():
             return None
-        scopes = ["https://www.googleapis.com/auth/drive"]
-        creds = service_account.Credentials.from_service_account_file(sa_file, scopes=scopes)
+
+        token_path = Path(drive_cfg.get("token_file", str(DB_PATH.parent / "gdrive_token.pkl")))
+        creds = None
+        if token_path.exists():
+            with open(token_path, "rb") as fh:
+                import pickle
+                creds = pickle.load(fh)
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                with open(token_path, "wb") as fh:
+                    pickle.dump(creds, fh)
+
+        if not creds or not creds.valid:
+            flow = InstalledAppFlow.from_client_secrets_file(creds_file, ["https://www.googleapis.com/auth/drive"])
+            creds = flow.run_local_server(port=0)
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(token_path, "wb") as fh:
+                import pickle
+                pickle.dump(creds, fh)
+
         return build("drive", "v3", credentials=creds)
 
     def _find_drive_marker(self, phase, expected_status):
@@ -199,15 +224,17 @@ class PipelineOrchestrator:
         if not folder_id:
             return None
         try:
-            query = f"'{folder_id}' in parents and trashed = false and name contains '_'"
+            query = f"'{folder_id}' in parents and trashed = false"
             results = service.files().list(q=query, fields="files(id, name)").execute()
             for f in results.get("files", []):
                 name = f["name"]
-                base = name.split(".")[0]
+                if "_" not in name:
+                    continue
+                base, ext = name.rsplit(".", 1)
                 parts = base.split("_", 1)
                 if len(parts) != 2:
                     continue
-                file_phase, file_status = parts
+                file_phase, file_status = parts[1], ext
                 if file_phase == phase and file_status == expected_status:
                     return f["id"]
         except Exception:
