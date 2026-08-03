@@ -86,6 +86,8 @@ class PipelineOrchestrator:
 
         if phase == "idle" and status == "completed":
             self._check_sharepoint_marker()
+        elif phase == "sharepoint_to_drive" and status == "running":
+            self._check_sharepoint_marker()
         elif phase == "sharepoint_to_drive" and status == "completed":
             self._start_drive_download()
         elif phase == "drive_download" and status == "completed":
@@ -145,9 +147,6 @@ class PipelineOrchestrator:
             self.pipeline.update(
                 "drive_to_sharepoint", "completed", "Marker gedetecteerd"
             )
-
-    def _find_drive_marker(self, phase, expected_status):
-        return None
 
     def _start_drive_download(self):
         self.pipeline.update("drive_download", "running", "Drive download gestart")
