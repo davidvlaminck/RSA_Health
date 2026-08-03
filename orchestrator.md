@@ -113,8 +113,10 @@ De FastAPI-app start de orchestrator standaard **niet** mee. Dit kan via de
 
 ```text
 00:00  Power Automate            kopiert SharePoint → Drive
-00:30  Power Automate            marker: sharepoint_to_drive
-00:31  Orchestrator              marker gedetecteerd → sharepoint_to_drive / completed
+00:00  Power Automate            marker: sharepoint_to_drive.running
+00:30  Power Automate            marker: sharepoint_to_drive.completed
+00:31  Orchestrator              .running gedetecteerd → sharepoint_to_drive / running
+00:31  Orchestrator              .completed gedetecteerd → sharepoint_to_drive / completed
 00:31  Orchestrator              start sync_drive_to_local → drive_download / running
 00:35  Orchestrator              drive_download / completed   (of: failed → stop)
         ~ wacht op arango_sync = completed (T1; in de normale loop geen time-out) ~
@@ -429,8 +431,10 @@ orchestrator wacht steeds met een timeout op het verwachte signaal.
 
 ```text
 00:00  Power Automate            kopiert SharePoint → Drive
-00:30  Power Automate            marker: sharepoint_to_drive
-00:31  Orchestrator              marker gedetecteerd → sharepoint_to_drive / completed
+00:00  Power Automate            marker: sharepoint_to_drive.running
+00:30  Power Automate            marker: sharepoint_to_drive.completed
+00:31  Orchestrator              .running gedetecteerd → sharepoint_to_drive / running
+00:31  Orchestrator              .completed gedetecteerd → sharepoint_to_drive / completed
 00:31  Orchestrator              start sync_drive_to_local → drive_download / running
 00:35  Orchestrator              drive_download / completed   (of: failed → stop)
         ~ wacht op arango_sync = completed (T1; in de normale loop geen time-out) ~
@@ -495,6 +499,7 @@ Power Automate maakt hierin bestanden aan.
 Voorbeelden:
 
 ```text
+2026-07-30_sharepoint_to_drive.running
 2026-07-30_sharepoint_to_drive.completed
 2026-07-30_sharepoint_to_drive.failed
 
@@ -508,7 +513,13 @@ Voorbeelden:
 
 ### SharePoint → Drive
 
-Wanneer de Power Automate flow succesvol afgerond is:
+Wanneer de Power Automate flow start:
+
+```text
+2026-07-30_sharepoint_to_drive.running
+```
+
+Wanneer de flow succesvol afgerond is:
 
 ```text
 2026-07-30_sharepoint_to_drive.completed
@@ -546,6 +557,19 @@ Bijvoorbeeld:
 - of telkens wanneer een nieuwe workflowstap geëvalueerd wordt.
 
 Wanneer een markerbestand wordt gevonden:
+
+```text
+2026-07-30_sharepoint_to_drive.running
+```
+
+wordt de centrale status bijgewerkt:
+
+```text
+phase = sharepoint_to_drive
+status = running
+```
+
+Wanneer een `.completed` markerbestand wordt gevonden:
 
 ```text
 2026-07-30_sharepoint_to_drive.completed

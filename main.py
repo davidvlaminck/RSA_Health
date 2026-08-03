@@ -11,7 +11,7 @@ import psycopg2
 import tomli
 from arango import ArangoClient
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from lib.orchestrator import lifespan
@@ -249,7 +249,7 @@ def load_config():
         return [], {}
     with CONFIG_PATH.open("rb") as f:
         cfg = tomli.load(f)
-    return cfg.get("databases", []), cfg.get("logs", {})
+    return cfg.get("databases", []), cfg.get("logs", {}).get("directory", "")
 
 
 def bytes_to_gb(value_bytes: int) -> float:
@@ -405,27 +405,79 @@ def index():
     return FileResponse("static/index.html")
 
 
-LOG_LABELS = {
-    "arangodb_fill": "ArangoDB Fill Log",
-    "postgresql_fill": "PostgreSQL Fill Log",
-    "rsa_fill": "RSA Fill Log",
+LOG_FILES = {
+    "arangodb": "arango_sync",
+    "postgis": "postgis_sync",
+    "rsa": "RSA",
 }
 
 
-@app.get("/logs/{log_key}")
-def download_log(log_key: str):
-    _, logs = load_config()
-    path = logs.get(log_key)
-    if not path:
-        return {"error": "log not configured"}
-    file_path = Path(path)
-    if not file_path.is_file():
-        return {"error": "log file not found"}
-    return FileResponse(
-        file_path,
-        filename=file_path.name,
-        media_type="text/plain",
+@app.get("/logs")
+def download_log(type: str = "all", range: str = "1d"):
+    _, logs_dir = load_config()
+    if not logs_dir:
+        return {"error": "logs directory not configured"}
+    base = Path(logs_dir)
+    if not base.is_dir():
+        return {"error": "logs directory not found"}
+
+    selected = list(LOG_FILES.items()) if type == "all" else [(type, LOG_FILES.get(type, "")) if type in LOG_FILES else []]
+    if not selected:
+        return {"error": "invalid log type"}
+
+    cutoff = None
+    if range == "1d":
+        cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+
+    import zipfile, io, gzip
+    buf = io.BytesIO()
+    seen = set()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for key, filename in selected:
+            pattern = f"{filename}.log" if range == "1d" else f"{filename}*"
+            matches = sorted(base.glob(pattern))
+            for file_path in matches:
+                arcname = file_path.name
+                if arcname in seen:
+                    continue
+                seen.add(arcname)
+                if file_path.suffix == ".gz":
+                    try:
+                        with gzip.open(file_path, "rt", encoding="utf-8", errors="replace") as f:
+                            content = f.readlines()
+                    except Exception:
+                        continue
+                else:
+                    try:
+                        content = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    except Exception:
+                        continue
+                if cutoff:
+                    content = [line for line in content if _parse_log_time(line) and _parse_log_time(line) >= cutoff]
+                if content:
+                    zf.writestr(arcname, "\n".join(content) + "\n")
+
+    buf.seek(0)
+    range_label = "1d" if range == "1d" else "all"
+    return Response(
+        buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=logs_{type}_{range_label}.zip"},
     )
+
+
+def _parse_log_time(line: str) -> datetime | None:
+    import re
+    m = re.search(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", line)
+    if not m:
+        return None
+    try:
+        dt = datetime.fromisoformat(f"{m.group(1)} {m.group(2)}")
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
 
 
 @app.get("/{full_path:path}")

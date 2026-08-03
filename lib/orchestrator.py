@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from lib.pipeline_state import PipelineState
 
 DB_PATH = Path(__file__).resolve().parent.parent / "health.db"
+CONFIG_PATH = DB_PATH.parent / "config.toml"
 
 
 PIPELINE_TIMEOUTS = {
@@ -121,8 +122,13 @@ class PipelineOrchestrator:
         self._wait_timeout = 0
 
     def _check_sharepoint_marker(self):
-        marker = self._find_drive_marker("sharepoint_to_drive", "completed")
-        if marker:
+        running_marker = self._find_drive_marker("sharepoint_to_drive", "running")
+        if running_marker:
+            self.pipeline.update(
+                "sharepoint_to_drive", "running", "Marker gedetecteerd"
+            )
+        completed_marker = self._find_drive_marker("sharepoint_to_drive", "completed")
+        if completed_marker:
             self.pipeline.update(
                 "sharepoint_to_drive", "completed", "Marker gedetecteerd"
             )
@@ -158,6 +164,55 @@ class PipelineOrchestrator:
         if now.hour == 0 and self._last_reset_date != now.date():
             self._last_reset_date = now.date()
             self.pipeline.update("idle", "completed", "Dagelijkse reset")
+
+    def _load_drive_config(self):
+        if not CONFIG_PATH.exists():
+            return None
+        import tomli
+        with CONFIG_PATH.open("rb") as f:
+            cfg = tomli.load(f)
+        drive = cfg.get("drive", {})
+        if not drive:
+            return None
+        return drive
+
+    def _get_drive_service(self):
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+
+        drive_cfg = self._load_drive_config()
+        if not drive_cfg:
+            return None
+        sa_file = drive_cfg.get("service_account_file")
+        if not sa_file or not Path(sa_file).is_file():
+            return None
+        scopes = ["https://www.googleapis.com/auth/drive"]
+        creds = service_account.Credentials.from_service_account_file(sa_file, scopes=scopes)
+        return build("drive", "v3", credentials=creds)
+
+    def _find_drive_marker(self, phase, expected_status):
+        service = self._get_drive_service()
+        if not service:
+            return None
+        drive_cfg = self._load_drive_config() or {}
+        folder_id = drive_cfg.get("folder_id")
+        if not folder_id:
+            return None
+        try:
+            query = f"'{folder_id}' in parents and trashed = false and name contains '_'"
+            results = service.files().list(q=query, fields="files(id, name)").execute()
+            for f in results.get("files", []):
+                name = f["name"]
+                base = name.split(".")[0]
+                parts = base.split("_", 1)
+                if len(parts) != 2:
+                    continue
+                file_phase, file_status = parts
+                if file_phase == phase and file_status == expected_status:
+                    return f["id"]
+        except Exception:
+            pass
+        return None
 
 
 @asynccontextmanager

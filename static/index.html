@@ -196,6 +196,24 @@
             border-color: #64748b;
             color: #e2e8f0;
         }
+        .log-controls {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .log-controls select {
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: #e2e8f0;
+            padding: 0.4rem 0.6rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+        }
+        .log-controls .log-btn {
+            margin-top: 0;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -226,9 +244,19 @@
         <div class="card" id="logs-card">
             <h2>Logs</h2>
             <div id="logs-content">
-                <button class="log-btn" data-log="arangodb_fill">ArangoDB Fill Log</button>
-                <button class="log-btn" data-log="postgresql_fill">PostgreSQL Fill Log</button>
-                <button class="log-btn" data-log="rsa_fill">RSA Fill Log</button>
+                <div class="log-controls">
+                    <select id="log-type">
+                        <option value="all">Alles</option>
+                        <option value="arangodb">ArangoDB</option>
+                        <option value="postgis">PostGIS</option>
+                        <option value="rsa">RSA</option>
+                    </select>
+                    <select id="log-range">
+                        <option value="1d">Laatste dag</option>
+                        <option value="all">Alles</option>
+                    </select>
+                    <button id="log-download" class="log-btn">Download logs</button>
+                </div>
             </div>
         </div>
     </div>
@@ -275,6 +303,12 @@
                 const logKey = btn.dataset.log;
                 window.location.href = `/logs/${logKey}`;
             });
+        });
+
+        document.getElementById('log-download').addEventListener('click', () => {
+            const type = document.getElementById('log-type').value;
+            const range = document.getElementById('log-range').value;
+            window.location.href = `/logs?type=${encodeURIComponent(type)}&range=${encodeURIComponent(range)}`;
         });
 
         function setRange(range) {

@@ -17,7 +17,10 @@ username = "postgres"
 password = "changeme"
 database = "awvinfra"
 
+[drive]
+service_account_file = "/path/to/service-account.json"
+folder_id = "your-drive-folder-id"
+poll_interval_seconds = 60
+
 [logs]
-arangodb_fill = "/path/to/arangodb-fill.log"
-postgresql_fill = "/path/to/postgresql-fill.log"
-rsa_fill = "/path/to/rsa-fill.log"
+directory = "/var/log/rsa-health"
