@@ -1,3 +1,4 @@
+import logging
 import socket
 import sqlite3
 import subprocess
@@ -19,6 +20,15 @@ from lib.pipeline_state import PipelineState
 
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 DB_PATH = Path(__file__).parent / "health.db"
+
+
+class IndexAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return ' "GET / HTTP/' not in msg and ' "HEAD / HTTP/' not in msg
+
+
+logging.getLogger("uvicorn.access").addFilter(IndexAccessLogFilter())
 
 pipeline = PipelineState(DB_PATH)
 
@@ -421,7 +431,7 @@ def download_log(type: str = "all", range: str = "1d"):
     if not base.is_dir():
         return {"error": "logs directory not found"}
 
-    selected = list(LOG_FILES.items()) if type == "all" else [(type, LOG_FILES.get(type, "")) if type in LOG_FILES else []]
+    selected = list(LOG_FILES.items()) if type == "all" else [(type, LOG_FILES[type])] if type in LOG_FILES else []
     if not selected:
         return {"error": "invalid log type"}
 
