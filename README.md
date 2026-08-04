@@ -121,14 +121,157 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000
 Bezoek `http://<server-ip>:8000/` — elk pad redirect naar het dashboard (`/`), terwijl
 `/health` en `/history` toegankelijk blijven als API endpoints.
 
-## Configuration
+## Deployment
 
-Maak een `config.toml` aan aan de hand van `config.example.toml` en vul je database-gegevens in.
-Het bestand wordt genegeerd door git.
+### 1. Kopieer project naar server
+
+```bash
+# Op je lokale machine
+scp -r /home/davidlinux/PycharmProjects/RSA_Health rsahealth@server:/opt/
+```
+
+Of gebruik git:
+```bash
+ssh rsahealth@server
+cd /opt
+git clone <repo-url> RSA_Health
+```
+
+### 2. Installeer dependencies
+
+```bash
+ssh rsahealth@server
+cd /opt/RSA_Health
+uv sync
+```
+
+### 3. Maak `config.toml` aan
 
 ```bash
 cp config.example.toml config.toml
+# Bewerk met je database credentials, Drive config, etc.
+nano config.toml
 ```
+
+### 4. Genereer Google Drive token (eenmalig)
+
+```bash
+uv run python -m lib.orchestrator --db health.db
+```
+
+Log in met je Google-account in de browser. Daarna wordt `gdrive_token.pkl` automatisch gebruikt.
+
+### 5. Maak systemd services aan
+
+**`/etc/systemd/system/rsa-health.service`:**
+
+```ini
+[Unit]
+Description=RSA Health FastAPI
+After=network.target
+
+[Service]
+Type=simple
+User=rsahealth
+WorkingDirectory=/opt/RSA_Health
+ExecStart=/opt/RSA_Health/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**`/etc/systemd/system/rsa-health-orchestrator.service`:**
+
+```ini
+[Unit]
+Description=RSA Health Pipeline Orchestrator
+After=network.target rsa-health.service
+
+[Service]
+Type=simple
+User=rsahealth
+WorkingDirectory=/opt/RSA_Health
+ExecStart=/opt/RSA_Health/.venv/bin/python -m lib.orchestrator --db /opt/RSA_Health/health.db
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 6. Activeer en start services
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now rsa-health.service
+sudo systemctl enable --now rsa-health-orchestrator.service
+```
+
+Controleer status:
+```bash
+sudo systemctl status rsa-health.service
+sudo systemctl status rsa-health-orchestrator.service
+```
+
+Logs:
+```bash
+journalctl -u rsa-health.service -f
+journalctl -u rsa-health-orchestrator.service -f
+```
+
+### 7. Open firewall
+
+```bash
+# UFW
+sudo ufw allow 8000/tcp
+
+# Of firewalld
+sudo firewall-cmd --add-port=8000/tcp --permanent
+sudo firewall-cmd --reload
+```
+
+### 8. Toegang
+
+Surf naar `http://<server-ip>:8000/` — het dashboard verschijnt direct.
+
+### Optioneel: Nginx reverse proxy (aanbevolen voor productie)
+
+```bash
+sudo apt install nginx
+```
+
+**`/etc/nginx/sites-available/rsa-health`:**
+
+```nginx
+server {
+    listen 80;
+    server_name <server-ip-of-domein>;
+
+    client_max_body_size 10M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Activeren:
+```bash
+sudo ln -s /etc/nginx/sites-available/rsa-health /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Nu is de pagina bereikbaar op `http://<server-ip>` (zonder poort).
+
+## Configuration
+
+...
 
 ## Google Drive OAuth setup (voor Power Automate markers)
 
