@@ -38,6 +38,8 @@ app = FastAPI(lifespan=lifespan)
 
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,6 +84,8 @@ def init_db():
 def save_snapshot(server: dict, net: dict, db_results: dict):
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute(
             """
             INSERT INTO snapshots (timestamp, cpu_percent, mem_used_gb, mem_total_gb, mem_percent, disk_used_gb, disk_total_gb, disk_percent, net_latency_ms)
@@ -119,6 +123,8 @@ def save_snapshot(server: dict, net: dict, db_results: dict):
 
 def get_history(limit: int = 100, after: str | None = None):
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.row_factory = sqlite3.Row
         query = """
             SELECT timestamp, cpu_percent, mem_percent, disk_percent, net_latency_ms
@@ -136,6 +142,8 @@ def get_history(limit: int = 100, after: str | None = None):
 
 def get_db_history(limit: int = 100, after: str | None = None):
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.row_factory = sqlite3.Row
         query = """
             SELECT timestamp, db_name, db_type, status, latency_ms

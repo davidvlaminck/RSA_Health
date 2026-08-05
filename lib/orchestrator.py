@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import threading
@@ -14,6 +15,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from lib.pipeline_state import PipelineState
+import sqlite3
 
 DB_PATH = Path(__file__).resolve().parent.parent / "health.db"
 CONFIG_PATH = DB_PATH.parent / "config.toml"
@@ -58,8 +60,13 @@ class PipelineOrchestrator:
         while self.running:
             try:
                 self._tick()
+            except sqlite3.OperationalError as exc:
+                logging.error(f"SQLite fout in orchestrator: {exc}")
             except Exception as exc:
-                self.pipeline.update("orchestrator", "failed", f"Fout: {exc}")
+                try:
+                    self.pipeline.update("orchestrator", "failed", f"Fout: {exc}")
+                except sqlite3.OperationalError:
+                    logging.error(f"SQLite fout bij loggen van orchestrator fout: {exc}")
             time.sleep(self.POLL_INTERVAL)
 
     def _tick(self):

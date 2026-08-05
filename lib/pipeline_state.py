@@ -7,7 +7,10 @@ class PipelineState:
         self.db_path = db_path
 
     def _conn(self):
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
 
     def ensure(self):
         with self._conn() as conn:
