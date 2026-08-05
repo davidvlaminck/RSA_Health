@@ -37,6 +37,16 @@ class PipelineState:
                 CREATE INDEX IF NOT EXISTS idx_pipeline_history_phase_status
                 ON pipeline_state_history(phase, status, updated_at DESC)
             """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_pipeline_state_history
+                AFTER UPDATE ON pipeline_state
+                FOR EACH ROW
+                WHEN OLD.phase != NEW.phase OR OLD.status != NEW.status
+                BEGIN
+                    INSERT INTO pipeline_state_history (phase, status, updated_at, message)
+                    VALUES (OLD.phase, OLD.status, OLD.updated_at, OLD.message);
+                END
+            """)
             conn.commit()
 
     def get(self) -> dict | None:
@@ -51,10 +61,6 @@ class PipelineState:
         with self._conn() as conn:
             conn.execute(
                 "UPDATE pipeline_state SET phase = ?, status = ?, updated_at = ?, message = ? WHERE id = 1",
-                (phase, status, _now(), message),
-            )
-            conn.execute(
-                "INSERT INTO pipeline_state_history (phase, status, updated_at, message) VALUES (?, ?, ?, ?)",
                 (phase, status, _now(), message),
             )
             conn.commit()
