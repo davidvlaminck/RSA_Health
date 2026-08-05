@@ -66,6 +66,23 @@
             margin: 0 auto;
         }
 
+        .main-layout {
+            display: flex;
+            gap: 1.25rem;
+            align-items: flex-start;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .left-column {
+            flex: 0 0 320px;
+            position: sticky;
+            top: 1rem;
+        }
+        .right-column {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+
         .card {
             background: #1e293b;
             border: 1px solid #334155;
@@ -228,24 +245,24 @@
         }
         .pipeline-diagram {
             display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-            align-items: center;
-            justify-content: center;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.25rem;
         }
         .pipeline-step {
             display: flex;
-            flex-direction: column;
+            flex-direction: row;
             align-items: center;
-            gap: 0.25rem;
+            justify-content: space-between;
+            gap: 0.75rem;
             padding: 0.5rem 0.75rem;
             border-radius: 8px;
             border: 1px solid #334155;
             background: #0f172a;
             color: #94a3b8;
             font-size: 0.8rem;
-            min-width: 100px;
-            text-align: center;
+            min-width: 280px;
+            text-align: left;
             transition: all 0.3s;
         }
         .pipeline-step.active {
@@ -271,8 +288,42 @@
         }
         .pipeline-arrow {
             color: #64748b;
-            font-size: 1.4rem;
+            font-size: 1.2rem;
             font-weight: bold;
+            line-height: 1;
+            text-align: center;
+        }
+        .pipeline-history {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+            align-items: flex-end;
+        }
+        .pipeline-history-item {
+            font-size: 0.7rem;
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: #94a3b8;
+            white-space: nowrap;
+        }
+        .pipeline-history-item.status-running {
+            border-color: #2563eb44;
+            color: #60a5fa;
+        }
+        .pipeline-history-item.status-completed {
+            border-color: #05966944;
+            color: #34d399;
+        }
+        .pipeline-history-item.status-failed,
+        .pipeline-history-item.status-aborted {
+            border-color: #dc262644;
+            color: #f87171;
+        }
+        .pipeline-history-item.status-starting {
+            border-color: #fbbf2444;
+            color: #fbbf24;
         }
     </style>
 </head>
@@ -284,72 +335,77 @@
         <div class="updated" id="updated"></div>
     </div>
 
-    <div class="dashboard">
-        <div class="card" id="pipeline-card">
-            <h2>Pipeline Status</h2>
-            <div id="pipeline-content">Loading...</div>
+    <div class="main-layout">
+        <div class="left-column">
+            <div class="pipeline-flow-card">
+                <h2>Pipeline Flow</h2>
+                <div id="pipeline-diagram">Loading...</div>
+            </div>
         </div>
-        <div class="card" id="server-card">
-            <h2>Server</h2>
-            <div id="server-content">Loading...</div>
-        </div>
-        <div class="card" id="network-card">
-            <h2>Network</h2>
-            <div id="network-content">Loading...</div>
-        </div>
-        <div class="card" id="db-card">
-            <h2>Databases</h2>
-            <div id="db-content">Loading...</div>
-        </div>
-        <div class="card" id="logs-card">
-            <h2>Logs</h2>
-            <div id="logs-content">
-                <div class="log-controls">
-                    <select id="log-type">
-                        <option value="all">Alles</option>
-                        <option value="arangodb">ArangoDB</option>
-                        <option value="postgis">PostGIS</option>
-                        <option value="rsa">RSA</option>
-                    </select>
-                    <select id="log-range">
-                        <option value="1d">Laatste dag</option>
-                        <option value="all">Alles</option>
-                    </select>
-                    <button id="log-download" class="log-btn">Download logs</button>
+        <div class="right-column">
+            <div class="dashboard">
+                <div class="card" id="pipeline-card">
+                    <h2>Pipeline Status</h2>
+                    <div id="pipeline-content">Loading...</div>
+                </div>
+                <div class="card" id="server-card">
+                    <h2>Server</h2>
+                    <div id="server-content">Loading...</div>
+                </div>
+                <div class="card" id="network-card">
+                    <h2>Network</h2>
+                    <div id="network-content">Loading...</div>
+                </div>
+                <div class="card" id="db-card">
+                    <h2>Databases</h2>
+                    <div id="db-content">Loading...</div>
+                </div>
+                <div class="card" id="logs-card">
+                    <h2>Logs</h2>
+                    <div id="logs-content">
+                        <div class="log-controls">
+                            <select id="log-type">
+                                <option value="all">Alles</option>
+                                <option value="arangodb">ArangoDB</option>
+                                <option value="postgis">PostGIS</option>
+                                <option value="rsa">RSA</option>
+                            </select>
+                            <select id="log-range">
+                                <option value="1d">Laatste dag</option>
+                                <option value="all">Alles</option>
+                            </select>
+                            <button id="log-download" class="log-btn">Download logs</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="history-section">
+                <h2>History</h2>
+                <div class="filters">
+                    <button data-range="5m">5m</button>
+                    <button data-range="1h" class="active">1h</button>
+                    <button data-range="12h">12h</button>
+                    <button data-range="1d">1d</button>
+                    <button data-range="7d">7d</button>
+                    <button data-range="1mo">1mo</button>
+                </div>
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <h3>CPU %</h3>
+                        <canvas id="cpuChart"></canvas>
+                    </div>
+                    <div class="chart-card">
+                        <h3>Memory %</h3>
+                        <canvas id="memChart"></canvas>
+                    </div>
+                    <div class="chart-card">
+                        <h3>Disk %</h3>
+                        <canvas id="diskChart"></canvas>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
-
-    <div class="history-section">
-        <h2>History</h2>
-        <div class="filters">
-            <button data-range="5m">5m</button>
-            <button data-range="1h" class="active">1h</button>
-            <button data-range="12h">12h</button>
-            <button data-range="1d">1d</button>
-            <button data-range="7d">7d</button>
-            <button data-range="1mo">1mo</button>
-        </div>
-        <div class="charts-grid">
-            <div class="chart-card">
-                <h3>CPU %</h3>
-                <canvas id="cpuChart"></canvas>
-            </div>
-            <div class="chart-card">
-                <h3>Memory %</h3>
-                <canvas id="memChart"></canvas>
-            </div>
-            <div class="chart-card">
-                <h3>Disk %</h3>
-                <canvas id="diskChart"></canvas>
-            </div>
-        </div>
-    </div>
-
-    <div class="pipeline-flow-card">
-        <h2>Pipeline Flow</h2>
-        <div id="pipeline-diagram">Loading...</div>
     </div>
 
     <script>
@@ -438,8 +494,24 @@
             const container = document.getElementById('pipeline-diagram');
             if (!container) return;
 
-            const currentPhase = pipeline?.phase || 'idle';
-            const currentStatus = pipeline?.status || 'completed';
+            const currentPhase = pipeline?.current?.phase || 'idle';
+            const currentStatus = pipeline?.current?.status || 'completed';
+            const history = pipeline?.history || {};
+
+            const statusClass = (status) => {
+                if (status === 'completed') return 'completed';
+                if (status === 'failed' || status === 'aborted') return 'failed';
+                if (status === 'starting') return 'starting';
+                return 'running';
+            };
+
+            const STATUS_ORDER = { starting: 0, running: 1, completed: 2, failed: 3, aborted: 4 };
+
+            const formatTime = (iso) => {
+                if (!iso) return '';
+                const d = new Date(iso);
+                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            };
 
             let html = '<div class="pipeline-diagram">';
             PIPELINE_STEPS.forEach((step, idx) => {
@@ -454,9 +526,21 @@
                 } else if (step.id === 'idle' && currentPhase === 'idle') {
                     stepClass = currentStatus === 'completed' ? 'completed' : 'idle';
                 }
-                html += `<div class="pipeline-step ${stepClass}">${step.label}</div>`;
+
+                html += `<div class="pipeline-step ${stepClass}">`;
+                html += `<div>${step.label}</div>`;
+                const phaseHistory = history[step.id];
+                if (phaseHistory && phaseHistory.length > 0) {
+                    const sorted = [...phaseHistory].sort((a, b) => (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99));
+                    html += '<div class="pipeline-history">';
+                    sorted.forEach((entry) => {
+                        html += `<span class="pipeline-history-item status-${statusClass(entry.status)}">${entry.status} · ${formatTime(entry.updated_at)}</span>`;
+                    });
+                    html += '</div>';
+                }
+                html += '</div>';
                 if (idx < PIPELINE_STEPS.length - 1) {
-                    html += '<div class="pipeline-arrow">→</div>';
+                    html += '<div class="pipeline-arrow">↓</div>';
                 }
             });
             html += '</div>';
@@ -474,15 +558,15 @@
             updatedEl.textContent = 'Updated: ' + new Date().toLocaleString();
 
             let pipelineHtml = '';
-            if (pipeline) {
-                const statusClass = pipeline.status === 'completed' ? 'ok' : pipeline.status === 'failed' || pipeline.status === 'aborted' ? 'error' : 'warn';
+            if (pipeline && pipeline.current) {
+                const statusClass = pipeline.current.status === 'completed' ? 'ok' : pipeline.current.status === 'failed' || pipeline.current.status === 'aborted' ? 'error' : 'warn';
                 pipelineHtml += `
-                    <div class="metric"><span class="label">Phase</span><span class="value">${pipeline.phase || 'idle'}</span></div>
-                    <div class="metric"><span class="label">Status</span><span class="value ${statusClass}">${(pipeline.status || 'unknown').toUpperCase()}</span></div>
-                    <div class="metric"><span class="label">Updated</span><span class="value">${pipeline.updated_at ? new Date(pipeline.updated_at).toLocaleString() : '-'}</span></div>
+                    <div class="metric"><span class="label">Phase</span><span class="value">${pipeline.current.phase || 'idle'}</span></div>
+                    <div class="metric"><span class="label">Status</span><span class="value ${statusClass}">${(pipeline.current.status || 'unknown').toUpperCase()}</span></div>
+                    <div class="metric"><span class="label">Updated</span><span class="value">${pipeline.current.updated_at ? new Date(pipeline.current.updated_at).toLocaleString() : '-'}</span></div>
                 `;
-                if (pipeline.message) {
-                    pipelineHtml += `<div class="error-box">${pipeline.message}</div>`;
+                if (pipeline.current.message) {
+                    pipelineHtml += `<div class="error-box">${pipeline.current.message}</div>`;
                 }
             } else {
                 pipelineHtml = 'No pipeline data';

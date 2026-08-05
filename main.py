@@ -391,8 +391,9 @@ class PipelineUpdate(BaseModel):
 def pipeline_state():
     init_db()
     pipeline.ensure()
-    state = pipeline.get()
-    return state or {}
+    state = pipeline.get() or {}
+    history = pipeline.get_history()
+    return {"current": state, "history": history}
 
 
 @app.post("/pipeline/update")

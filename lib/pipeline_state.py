@@ -24,6 +24,19 @@ class PipelineState:
                 "INSERT OR IGNORE INTO pipeline_state (id, phase, status, updated_at, message) VALUES (?, ?, ?, ?, ?)",
                 (1, "idle", "completed", _now(), ""),
             )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pipeline_state_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    phase TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    message TEXT DEFAULT ''
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_pipeline_history_phase_status
+                ON pipeline_state_history(phase, status, updated_at DESC)
+            """)
             conn.commit()
 
     def get(self) -> dict | None:
@@ -40,7 +53,41 @@ class PipelineState:
                 "UPDATE pipeline_state SET phase = ?, status = ?, updated_at = ?, message = ? WHERE id = 1",
                 (phase, status, _now(), message),
             )
+            conn.execute(
+                "INSERT INTO pipeline_state_history (phase, status, updated_at, message) VALUES (?, ?, ?, ?)",
+                (phase, status, _now(), message),
+            )
             conn.commit()
+
+    def get_history(self) -> dict:
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT h.phase, h.status, h.updated_at, h.message
+                FROM pipeline_state_history h
+                INNER JOIN (
+                    SELECT phase, status, MAX(updated_at) AS max_updated_at
+                    FROM pipeline_state_history
+                    GROUP BY phase, status
+                ) latest
+                ON h.phase = latest.phase
+                AND h.status = latest.status
+                AND h.updated_at = latest.max_updated_at
+                ORDER BY h.phase, h.updated_at DESC
+            """).fetchall()
+            result: dict = {}
+            for row in rows:
+                phase = row["phase"]
+                if phase not in result:
+                    result[phase] = []
+                result[phase].append(
+                    {
+                        "status": row["status"],
+                        "updated_at": row["updated_at"],
+                        "message": row["message"],
+                    }
+                )
+            return result
 
 
 def _now():
