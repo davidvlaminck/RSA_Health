@@ -3,7 +3,9 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
-from lib.orchestrator import lifespan
+from lib.orchestrator import lifespan as orchestrator_lifespan
 from lib.pipeline_state import PipelineState
 
 CONFIG_PATH = Path(__file__).parent / "config.toml"
@@ -31,9 +33,6 @@ class IndexAccessLogFilter(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(IndexAccessLogFilter())
 
 pipeline = PipelineState(DB_PATH)
-
-
-app = FastAPI(lifespan=lifespan)
 
 
 def init_db():
@@ -78,6 +77,8 @@ def init_db():
             "INSERT OR IGNORE INTO pipeline_state (id, phase, status, updated_at, message) VALUES (?, ?, ?, ?, ?)",
             (1, "idle", "completed", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), ""),
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON snapshots (timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_db_snapshots_timestamp ON db_snapshots (timestamp)")
         conn.commit()
 
 
@@ -119,6 +120,61 @@ def save_snapshot(server: dict, net: dict, db_results: dict):
                 ),
             )
         conn.commit()
+
+
+_last_prune_date = None
+
+
+def _prune_old_snapshots():
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    cutoff_str = cutoff.isoformat().replace("+00:00", "Z")
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("DELETE FROM snapshots WHERE timestamp < ?", (cutoff_str,))
+        conn.execute("DELETE FROM db_snapshots WHERE timestamp < ?", (cutoff_str,))
+        conn.commit()
+
+
+def _snapshot_loop(stop_event: threading.Event):
+    global _last_prune_date
+    _prune_old_snapshots()
+    _last_prune_date = datetime.now(timezone.utc).date()
+
+    while not stop_event.is_set():
+        try:
+            config, _ = load_config()
+            server = check_server()
+            net = check_network()
+            db_results = {}
+            for db_cfg in config:
+                db_name = db_cfg.get("database", db_cfg.get("host", "unknown"))
+                db_results[db_name] = check_db(db_cfg)
+            save_snapshot(server, net, db_results)
+
+            now = datetime.now(timezone.utc)
+            if _last_prune_date != now.date():
+                _last_prune_date = now.date()
+                _prune_old_snapshots()
+        except Exception:
+            pass
+        stop_event.wait(30)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    stop_event = threading.Event()
+    snapshot_thread = threading.Thread(target=_snapshot_loop, args=(stop_event,), daemon=True)
+    snapshot_thread.start()
+
+    async with orchestrator_lifespan(app):
+        yield
+
+    stop_event.set()
+    snapshot_thread.join(timeout=5)
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def get_history(limit: int = 100, after: str | None = None):

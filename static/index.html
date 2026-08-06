@@ -405,6 +405,10 @@
                         <h3>Disk %</h3>
                         <canvas id="diskChart"></canvas>
                     </div>
+                    <div class="chart-card">
+                        <h3>DB Latency (ms)</h3>
+                        <canvas id="dbLatencyChart"></canvas>
+                    </div>
                 </div>
             </div>
         </div>
@@ -418,7 +422,7 @@
         const pipelineContent = document.getElementById('pipeline-content');
         const updatedEl = document.getElementById('updated');
 
-        let cpuChart, memChart, diskChart;
+        let cpuChart, memChart, diskChart, dbLatencyChart;
         let currentRange = '1h';
 
         document.querySelectorAll('.log-btn').forEach(btn => {
@@ -706,6 +710,59 @@
             cpuChart = new Chart(cpuCtx, makeChart(cpuCtx, cpuData, 'CPU %', '#38bdf8'));
             memChart = new Chart(memCtx, makeChart(memCtx, memData, 'Memory %', '#34d399'));
             diskChart = new Chart(diskCtx, makeChart(diskCtx, diskData, 'Disk %', '#fbbf24'));
+
+            const dbSnapshots = history?.db_snapshots || [];
+            const dbNames = [...new Set(dbSnapshots.map(s => s.db_name))];
+            const dbColors = ['#38bdf8', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#fb923c'];
+            const rawTimestamps = dbSnapshots.length > 0
+                ? [...new Set(dbSnapshots.map(s => s.timestamp))].sort()
+                : [];
+            const dbLabels = rawTimestamps.map(ts => {
+                const d = new Date(ts);
+                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            });
+
+            const dbDatasets = dbNames.map((name, idx) => {
+                const points = dbSnapshots.filter(s => s.db_name === name).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+                const pointMap = new Map(points.map(p => [p.timestamp, p.latency_ms]));
+                const values = rawTimestamps.map(ts => pointMap.get(ts) ?? null);
+                return {
+                    label: name,
+                    data: values,
+                    borderColor: dbColors[idx % dbColors.length],
+                    backgroundColor: dbColors[idx % dbColors.length] + '22',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.3,
+                    fill: false,
+                };
+            });
+
+            const dbLatencyCtx = document.getElementById('dbLatencyChart');
+            if (dbLatencyChart) dbLatencyChart.destroy();
+            if (dbLabels.length > 0 && dbDatasets.length > 0) {
+                dbLatencyChart = new Chart(dbLatencyCtx, {
+                    type: 'line',
+                    data: { labels: dbLabels, datasets: dbDatasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: { duration: 0 },
+                        plugins: { legend: { display: true, labels: { color: '#94a3b8', font: { size: 10 } } } },
+                        scales: {
+                            x: {
+                                ticks: { color: '#64748b', maxTicksLimit: 6, font: { size: 10 } },
+                                grid: { color: '#1e293b' },
+                            },
+                            y: {
+                                min: 0,
+                                ticks: { color: '#64748b', font: { size: 10 } },
+                                grid: { color: '#1e293b' },
+                            },
+                        },
+                    },
+                });
+            }
         }
 
         function triggerUpdateBar() {
