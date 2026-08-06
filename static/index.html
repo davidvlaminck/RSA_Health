@@ -715,7 +715,7 @@
             diskChart = new Chart(diskCtx, makeChart(diskCtx, diskData, 'Disk %', '#fbbf24'));
 
             const dbSnapshots = history?.db_snapshots || [];
-            const dbNames = [...new Set(dbSnapshots.map(s => s.db_name))];
+            const dbKeys = [...new Set(dbSnapshots.map(s => `${s.db_name}|${s.db_type}`))];
             const dbColors = ['#38bdf8', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#fb923c'];
             const rawTimestamps = dbSnapshots.length > 0
                 ? [...new Set(dbSnapshots.map(s => s.timestamp))].sort()
@@ -725,12 +725,13 @@
                 return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             });
 
-            const dbDatasets = dbNames.map((name, idx) => {
-                const points = dbSnapshots.filter(s => s.db_name === name).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+            const dbDatasets = dbKeys.map((key, idx) => {
+                const [name, type] = key.split('|');
+                const points = dbSnapshots.filter(s => s.db_name === name && s.db_type === type).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
                 const pointMap = new Map(points.map(p => [p.timestamp, p.latency_ms]));
                 const values = rawTimestamps.map(ts => pointMap.get(ts) ?? null);
                 return {
-                    label: name,
+                    label: type,
                     data: values,
                     borderColor: dbColors[idx % dbColors.length],
                     backgroundColor: dbColors[idx % dbColors.length] + '22',
