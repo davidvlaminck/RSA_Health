@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from lib.orchestrator import lifespan as orchestrator_lifespan
 from lib.pipeline_state import PipelineState
+from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
 
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 DB_PATH = Path(__file__).parent / "health.db"
@@ -35,93 +36,38 @@ logging.getLogger("uvicorn.access").addFilter(IndexAccessLogFilter())
 pipeline = PipelineState(DB_PATH)
 
 
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS snapshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                cpu_percent REAL,
-                mem_used_gb REAL,
-                mem_total_gb REAL,
-                mem_percent REAL,
-                disk_used_gb REAL,
-                disk_total_gb REAL,
-                disk_percent REAL,
-                net_latency_ms REAL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS db_snapshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                db_name TEXT NOT NULL,
-                db_type TEXT NOT NULL,
-                status TEXT NOT NULL,
-                latency_ms REAL,
-                error TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS pipeline_state (
-                id INTEGER PRIMARY KEY CHECK(id = 1),
-                phase TEXT,
-                status TEXT,
-                updated_at DATETIME,
-                message TEXT
-            )
-        """)
-        conn.execute(
-            "INSERT OR IGNORE INTO pipeline_state (id, phase, status, updated_at, message) VALUES (?, ?, ?, ?, ?)",
-            (1, "idle", "completed", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), ""),
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_timestamp ON snapshots (timestamp)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_db_snapshots_timestamp ON db_snapshots (timestamp)")
-        conn.commit()
-
-
 def save_snapshot(server: dict, net: dict, db_results: list[dict]):
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute(
-            """
-            INSERT INTO snapshots (timestamp, cpu_percent, mem_used_gb, mem_total_gb, mem_percent, disk_used_gb, disk_total_gb, disk_percent, net_latency_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                now,
-                server.get("cpu_percent"),
-                server.get("memory", {}).get("used_gb"),
-                server.get("memory", {}).get("total_gb"),
-                server.get("memory", {}).get("percent"),
-                server.get("disk", {}).get("used_gb"),
-                server.get("disk", {}).get("total_gb"),
-                server.get("disk", {}).get("percent"),
-                net.get("latency_ms") if net.get("status") == "ok" else None,
-            ),
+
+    enqueue_sqlite_job(
+        action="insert_snapshot",
+        payload={
+            "timestamp": now,
+            "cpu_percent": server.get("cpu_percent"),
+            "mem_used_gb": server.get("memory", {}).get("used_gb"),
+            "mem_total_gb": server.get("memory", {}).get("total_gb"),
+            "mem_percent": server.get("memory", {}).get("percent"),
+            "disk_used_gb": server.get("disk", {}).get("used_gb"),
+            "disk_total_gb": server.get("disk", {}).get("total_gb"),
+            "disk_percent": server.get("disk", {}).get("percent"),
+            "net_latency_ms": net.get("latency_ms") if net.get("status") == "ok" else None,
+        },
+    )
+
+    for entry in db_results:
+        name = entry["name"]
+        info = entry
+        enqueue_sqlite_job(
+            action="insert_db_snapshot",
+            payload={
+                "timestamp": now,
+                "db_name": name,
+                "db_type": info.get("type", "unknown"),
+                "status": info.get("status", "error"),
+                "latency_ms": info.get("latency_ms"),
+                "error": info.get("error"),
+            },
         )
-        for entry in db_results:
-            name = entry["name"]
-            info = entry
-            conn.execute(
-                """
-                INSERT INTO db_snapshots (timestamp, db_name, db_type, status, latency_ms, error)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    now,
-                    name,
-                    info.get("type", "unknown"),
-                    info.get("status", "error"),
-                    info.get("latency_ms"),
-                    info.get("error"),
-                ),
-            )
-        conn.commit()
 
 
 _last_prune_date = None
@@ -130,12 +76,10 @@ _last_prune_date = None
 def _prune_old_snapshots():
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     cutoff_str = cutoff.isoformat().replace("+00:00", "Z")
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("DELETE FROM snapshots WHERE timestamp < ?", (cutoff_str,))
-        conn.execute("DELETE FROM db_snapshots WHERE timestamp < ?", (cutoff_str,))
-        conn.commit()
+    enqueue_sqlite_job(
+        action="prune_snapshots",
+        payload={"cutoff": cutoff_str},
+    )
 
 
 def _snapshot_loop(stop_event: threading.Event):
@@ -215,11 +159,6 @@ def get_db_history(limit: int = 100, after: str | None = None):
         params.append(limit)
         rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in reversed(rows)]
-
-
-from lib.pipeline_state import PipelineState
-
-pipeline = PipelineState(DB_PATH)
 
 
 def run_arango_sync(timeout_seconds: int = 3600):
@@ -310,7 +249,6 @@ RANGE_MAP = {
 
 @app.get("/history")
 def history(range: str = "1h", limit: int = 1000):
-    init_db()
     delta = RANGE_MAP.get(range, timedelta(hours=1))
     after = (datetime.now(timezone.utc) - delta).isoformat().replace("+00:00", "Z")
     return {
@@ -428,7 +366,6 @@ def _check_postgresql(cfg: dict) -> dict:
 
 @app.get("/health")
 def health():
-    init_db()
     config, _ = load_config()
     server = check_server()
     net = check_network()
@@ -456,8 +393,6 @@ class PipelineUpdate(BaseModel):
 
 @app.get("/pipeline/state")
 def pipeline_state():
-    init_db()
-    pipeline.ensure()
     state = pipeline.get() or {}
     history = pipeline.get_history()
     return {"current": state, "history": history}
@@ -465,8 +400,6 @@ def pipeline_state():
 
 @app.post("/pipeline/update")
 def pipeline_update(payload: PipelineUpdate):
-    init_db()
-    pipeline.ensure()
     valid_statuses = {"running", "completed", "failed", "aborted"}
     if payload.status not in valid_statuses:
         return {"error": f"invalid status: {payload.status}"}

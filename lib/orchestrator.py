@@ -278,7 +278,6 @@ async def lifespan(app: FastAPI):
         yield
         return
     pipeline = PipelineState(DB_PATH)
-    pipeline.ensure()
     orchestrator = PipelineOrchestrator(pipeline)
     orchestrator.start()
     yield
@@ -287,7 +286,6 @@ async def lifespan(app: FastAPI):
 
 def run_standalone(db_path: str):
     pipeline = PipelineState(db_path)
-    pipeline.ensure()
     orchestrator = PipelineOrchestrator(pipeline)
     orchestrator.start()
     try:

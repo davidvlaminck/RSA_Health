@@ -1,5 +1,14 @@
-import sqlite3
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
+
+import sqlite3
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
 
 
 class PipelineState:
@@ -12,46 +21,6 @@ class PipelineState:
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
-    def ensure(self):
-        with self._conn() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS pipeline_state (
-                    id INTEGER PRIMARY KEY CHECK(id = 1),
-                    phase TEXT,
-                    status TEXT,
-                    updated_at DATETIME,
-                    message TEXT
-                )
-            """)
-            conn.execute(
-                "INSERT OR IGNORE INTO pipeline_state (id, phase, status, updated_at, message) VALUES (?, ?, ?, ?, ?)",
-                (1, "idle", "completed", _now(), ""),
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS pipeline_state_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    phase TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    updated_at DATETIME NOT NULL,
-                    message TEXT DEFAULT ''
-                )
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_pipeline_history_phase_status
-                ON pipeline_state_history(phase, status, updated_at DESC)
-            """)
-            conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS trg_pipeline_state_history
-                AFTER UPDATE ON pipeline_state
-                FOR EACH ROW
-                WHEN OLD.phase != NEW.phase OR OLD.status != NEW.status
-                BEGIN
-                    INSERT INTO pipeline_state_history (phase, status, updated_at, message)
-                    VALUES (OLD.phase, OLD.status, OLD.updated_at, OLD.message);
-                END
-            """)
-            conn.commit()
-
     def get(self) -> dict | None:
         with self._conn() as conn:
             conn.row_factory = sqlite3.Row
@@ -61,12 +30,15 @@ class PipelineState:
             return dict(row) if row else None
 
     def update(self, phase: str, status: str, message: str = ""):
-        with self._conn() as conn:
-            conn.execute(
-                "UPDATE pipeline_state SET phase = ?, status = ?, updated_at = ?, message = ? WHERE id = 1",
-                (phase, status, _now(), message),
-            )
-            conn.commit()
+        enqueue_sqlite_job(
+            action="update_pipeline_state",
+            payload={
+                "phase": phase,
+                "status": status,
+                "updated_at": _now(),
+                "message": message,
+            },
+        )
 
     def get_history(self) -> dict:
         with self._conn() as conn:
