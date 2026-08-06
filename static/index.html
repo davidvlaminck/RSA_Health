@@ -615,11 +615,11 @@
 
             let dbHtml = '';
             for (const entry of dbEntries) {
-                const name = entry.name;
+                const label = entry.type || entry.name;
                 const info = entry;
                 const color = info.status === 'ok' ? 'ok' : 'error';
                 dbHtml += `
-                    <div class="metric"><span class="label">${name}</span><span class="value ${color}">${info.status.toUpperCase()}</span></div>
+                    <div class="metric"><span class="label">${label}</span><span class="value ${color}">${info.status.toUpperCase()}</span></div>
                 `;
                 if (info.latency_ms !== undefined) {
                     dbHtml += `<div class="metric"><span class="label">Latency</span><span class="value">${info.latency_ms} ms</span></div>`;
