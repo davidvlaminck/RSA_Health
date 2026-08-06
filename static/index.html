@@ -557,9 +557,8 @@
         }
 
         function render(data, pipeline) {
-            const dbEntries = data.databases || {};
-            const dbKeys = Object.keys(dbEntries);
-            const anyDbError = dbKeys.some(k => dbEntries[k].status === 'error');
+            const dbEntries = data.databases || [];
+            const anyDbError = dbEntries.some(e => e.status === 'error');
 
             statusBadge.textContent = data.running ? 'Running' : 'Stopped';
             statusBadge.className = 'status ' + (data.running && !anyDbError ? 'ok' : 'error');
@@ -615,7 +614,9 @@
             networkContent.innerHTML = netHtml;
 
             let dbHtml = '';
-            for (const [name, info] of Object.entries(dbEntries)) {
+            for (const entry of dbEntries) {
+                const name = entry.name;
+                const info = entry;
                 const color = info.status === 'ok' ? 'ok' : 'error';
                 dbHtml += `
                     <div class="metric"><span class="label">${name}</span><span class="value ${color}">${info.status.toUpperCase()}</span></div>

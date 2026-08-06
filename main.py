@@ -82,7 +82,7 @@ def init_db():
         conn.commit()
 
 
-def save_snapshot(server: dict, net: dict, db_results: dict):
+def save_snapshot(server: dict, net: dict, db_results: list[dict]):
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -104,7 +104,9 @@ def save_snapshot(server: dict, net: dict, db_results: dict):
                 net.get("latency_ms") if net.get("status") == "ok" else None,
             ),
         )
-        for name, info in db_results.items():
+        for entry in db_results:
+            name = entry["name"]
+            info = entry
             conn.execute(
                 """
                 INSERT INTO db_snapshots (timestamp, db_name, db_type, status, latency_ms, error)
@@ -146,10 +148,10 @@ def _snapshot_loop(stop_event: threading.Event):
             config, _ = load_config()
             server = check_server()
             net = check_network()
-            db_results = {}
+            db_results = []
             for db_cfg in config:
                 db_name = db_cfg.get("database", db_cfg.get("host", "unknown"))
-                db_results[db_name] = check_db(db_cfg)
+                db_results.append({"name": db_name, **check_db(db_cfg)})
             save_snapshot(server, net, db_results)
 
             now = datetime.now(timezone.utc)
@@ -434,12 +436,13 @@ def health():
         "running": True,
         "server": server,
         "network": net,
-        "databases": {},
+        "databases": [],
     }
 
     for db_cfg in config:
         db_name = db_cfg.get("database", db_cfg.get("host", "unknown"))
-        response["databases"][db_name] = check_db(db_cfg)
+        result = check_db(db_cfg)
+        response["databases"].append({"name": db_name, **result})
 
     save_snapshot(server, net, response["databases"])
     return response
