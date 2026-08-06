@@ -533,7 +533,12 @@ def download_log(type: str = "all", range: str = "1d"):
                     except Exception:
                         continue
                 if cutoff:
-                    content = [line for line in content if _parse_log_time(line) and _parse_log_time(line) >= cutoff]
+                    filtered = []
+                    for line in content:
+                        parsed = _parse_log_time(line)
+                        if parsed is None or parsed >= cutoff:
+                            filtered.append(line)
+                    content = filtered
                 if content:
                     zf.writestr(arcname, "\n".join(content) + "\n")
 
