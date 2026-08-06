@@ -254,7 +254,7 @@ RANGE_MAP = {
 def history(range: str = "1h", limit: int = 1000):
     init_db()
     delta = RANGE_MAP.get(range, timedelta(hours=1))
-    after = (datetime.utcnow() - delta).isoformat() + "Z"
+    after = (datetime.now(timezone.utc) - delta).isoformat().replace("+00:00", "Z")
     return {
         "range": range,
         "snapshots": get_history(limit, after=after),

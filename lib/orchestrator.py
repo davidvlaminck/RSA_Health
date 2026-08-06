@@ -4,8 +4,9 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 
@@ -14,11 +15,13 @@ _ROOT = _HERE.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from lib.pipeline_state import PipelineState
 import sqlite3
+
+from lib.pipeline_state import PipelineState
 
 DB_PATH = Path(__file__).resolve().parent.parent / "health.db"
 CONFIG_PATH = DB_PATH.parent / "config.toml"
+LOCAL_TZ = ZoneInfo("Europe/Brussels")
 
 
 PIPELINE_TIMEOUTS = {
@@ -184,9 +187,9 @@ class PipelineOrchestrator:
         )
 
     def _daily_reset_check(self):
-        now = datetime.now(timezone.utc)
-        if now.hour == 0 and self._last_reset_date != now.date():
-            self._last_reset_date = now.date()
+        now_local = datetime.now(LOCAL_TZ)
+        if now_local.hour == 0 and self._last_reset_date != now_local.date():
+            self._last_reset_date = now_local.date()
             self.pipeline.update("idle", "completed", "Dagelijkse reset")
 
     def _load_drive_config(self):
