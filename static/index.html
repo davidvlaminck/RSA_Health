@@ -483,18 +483,23 @@
         }
 
         const PIPELINE_STEPS = [
-            { id: 'idle', label: 'Idle' },
-            { id: 'sharepoint_to_drive', label: 'SP → Drive' },
-            { id: 'drive_download', label: 'Drive Download' },
-            { id: 'arango_sync', label: 'Arango Sync' },
-            { id: 'postgis_sync_pausing', label: 'PostGIS Pauzeren' },
-            { id: 'postgis_sync_paused', label: 'PostGIS Gepauzeerd' },
-            { id: 'rsa_queries', label: 'RSA Queries' },
-            { id: 'postgis_sync_resuming', label: 'PostGIS Hervatten' },
-            { id: 'postgis_sync_running', label: 'PostGIS Loopt' },
-            { id: 'drive_upload', label: 'Drive Upload' },
-            { id: 'drive_to_sharepoint', label: 'Drive → SP' },
+            { id: 'idle', phaseIds: ['idle'], label: 'Idle' },
+            { id: 'sharepoint_to_drive', phaseIds: ['sharepoint_to_drive'], label: 'SP → Drive' },
+            { id: 'drive_download', phaseIds: ['drive_download'], label: 'Drive Download' },
+            { id: 'arango_sync', phaseIds: ['arango_sync'], label: 'Arango Sync' },
+            { id: 'postgis_sync_pausing', phaseIds: ['postgis_sync_pausing', 'postgis_sync_paused'], label: 'PostGIS Pauzeren' },
+            { id: 'rsa_queries', phaseIds: ['rsa_queries'], label: 'RSA Queries' },
+            { id: 'postgis_sync_resuming', phaseIds: ['postgis_sync_resuming', 'postgis_sync_running'], label: 'PostGIS Hervatten' },
+            { id: 'drive_upload', phaseIds: ['drive_upload'], label: 'Drive Upload' },
+            { id: 'drive_to_sharepoint', phaseIds: ['drive_to_sharepoint'], label: 'Drive → SP' },
         ];
+
+        function getCurrentDisplayStepIndex(phase) {
+            for (let i = 0; i < PIPELINE_STEPS.length; i++) {
+                if (PIPELINE_STEPS[i].phaseIds.includes(phase)) return i;
+            }
+            return 0;
+        }
 
         function renderPipelineDiagram(pipeline) {
             const container = document.getElementById('pipeline-diagram');
@@ -503,6 +508,7 @@
             const currentPhase = pipeline?.current?.phase || 'idle';
             const currentStatus = pipeline?.current?.status || 'completed';
             const history = pipeline?.history || {};
+            const currentDisplayIdx = getCurrentDisplayStepIndex(currentPhase);
 
             const statusClass = (status) => {
                 if (status === 'completed') return 'completed';
@@ -522,20 +528,17 @@
             let html = '<div class="pipeline-diagram">';
             PIPELINE_STEPS.forEach((step, idx) => {
                 let stepClass = 'idle';
-                if (step.id === currentPhase) {
+                if (step.phaseIds.includes(currentPhase)) {
                     stepClass = currentStatus === 'completed' ? 'completed' : currentStatus === 'failed' || currentStatus === 'aborted' ? 'failed' : 'active';
-                } else if (step.id !== 'idle') {
-                    const stepIdx = PIPELINE_STEPS.findIndex(s => s.id === currentPhase);
-                    if (stepIdx >= 0 && idx < stepIdx) {
-                        stepClass = 'completed';
-                    }
+                } else if (idx < currentDisplayIdx) {
+                    stepClass = 'completed';
                 } else if (step.id === 'idle' && currentPhase === 'idle') {
                     stepClass = currentStatus === 'completed' ? 'completed' : 'idle';
                 }
 
                 html += `<div class="pipeline-step ${stepClass}">`;
                 html += `<div>${step.label}</div>`;
-                const phaseHistory = history[step.id];
+                const phaseHistory = step.phaseIds.flatMap(id => history[id] || []);
                 if (phaseHistory && phaseHistory.length > 0) {
                     const sorted = [...phaseHistory].sort((a, b) => (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99));
                     html += '<div class="pipeline-history">';
