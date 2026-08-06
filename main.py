@@ -514,7 +514,7 @@ def download_log(type: str = "all", range: str = "1d"):
     seen = set()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for key, filename in selected:
-            pattern = f"{filename}.log" if range == "1d" else f"{filename}*"
+            pattern = f"{filename}*"
             matches = sorted(base.glob(pattern))
             for file_path in matches:
                 arcname = file_path.name
