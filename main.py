@@ -428,6 +428,8 @@ LOG_FILES = {
     "arangodb": "arango_sync",
     "postgis": "postgis_sync",
     "rsa": "RSA",
+    "rsa_orchestrator": "rsa_orchestrator",
+    "rsa_health": "rsa_health",
 }
 
 
