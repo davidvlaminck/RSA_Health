@@ -1,0 +1,17 @@
+[Unit]
+Description=RSA Health FastAPI
+After=network.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/data-platform/RSA_Health
+ExecStart=/home/deploy/.local/bin/uv run uvicorn main:app --host 127.0.0.1 --port 8000
+StandardOutput=append:/opt/data-platform/logs/rsa_health.log 
+StandardError=append:/opt/data-platform/logs/rsa_health.log
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
