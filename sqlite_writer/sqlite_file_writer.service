@@ -7,7 +7,7 @@ Type=simple
 User=deploy
 Group=deploy
 WorkingDirectory=/opt/data-platform
-Environment="DB_PATH=/opt/data-platform/health.db"
+Environment="DB_PATH=/opt/data-platform/RSA_Health/health.db"
 Environment="SQLITE_QUEUE_DIR=/opt/data-platform/sqlite_queue"
 ExecStart=/usr/bin/python3 /opt/data-platform/sqlite_file_writer.py
 Restart=always
