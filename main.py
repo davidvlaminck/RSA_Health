@@ -22,7 +22,7 @@ from sqlite_writer.pipeline_state import PipelineState
 from sqlite_writer.sqlite_file_writer import open_database, ensure_database_schema
 from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
 
-CONFIG_PATH = Path(__file__).parent.parent / "config_rsa_health.json"
+CONFIG_PATH = Path(__file__).parent.parent / 'config' / "config_rsa_health.json"
 DB_PATH = Path(__file__).parent / "health.db"
 
 
