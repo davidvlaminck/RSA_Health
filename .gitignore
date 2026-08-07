@@ -5,4 +5,4 @@ __pycache__/
 .idea/
 health.db
 server.log
-/config.json
+/config_rsa_health.json

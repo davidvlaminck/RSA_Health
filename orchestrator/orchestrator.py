@@ -27,8 +27,8 @@ import sqlite3
 from sqlite_writer.pipeline_state import PipelineState
 from sqlite_writer.sqlite_file_writer import ensure_database_schema, open_database
 
-DB_PATH = Path(__file__).resolve().parent.parent / "health.db"
-CONFIG_PATH = DB_PATH.parent / "config.json"
+DB_PATH = Path(__file__).parent.parent / "health.db"
+CONFIG_PATH = DB_PATH.parent.parent / 'config' / "config_rsa_health.json"
 LOCAL_TZ = ZoneInfo("Europe/Brussels")
 
 
