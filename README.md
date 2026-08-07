@@ -67,7 +67,7 @@ De orchestrator wordt **niet** gestart als onderdeel van deze service.
 ### Pipeline Orchestrator (losse service)
 
 ```bash
-uv run python -m lib.orchestrator --db health.db
+uv run python -m orchestrator.orchestrator --db health.db
 ```
 
 Met systemd (`/etc/systemd/system/rsa-health-orchestrator.service`):
@@ -81,7 +81,7 @@ After=network.target
 Type=simple
 User=rsahealth
 WorkingDirectory=/opt/RSA_Health
-ExecStart=/opt/RSA_Health/.venv/bin/python -m lib.orchestrator --db /opt/RSA_Health/health.db
+ExecStart=/opt/RSA_Health/.venv/bin/python -m orchestrator.orchestrator --db /opt/RSA_Health/health.db
 Restart=on-failure
 RestartSec=10
 
@@ -156,7 +156,7 @@ nano config.toml
 ### 4. Genereer Google Drive token (eenmalig)
 
 ```bash
-uv run python -m lib.orchestrator --db health.db
+uv run python -m orchestrator.orchestrator --db health.db
 ```
 
 Log in met je Google-account in de browser. Daarna wordt `gdrive_token.pkl` automatisch gebruikt.
@@ -193,7 +193,7 @@ After=network.target rsa-health.service
 Type=simple
 User=rsahealth
 WorkingDirectory=/opt/RSA_Health
-ExecStart=/opt/RSA_Health/.venv/bin/python -m lib.orchestrator --db /opt/RSA_Health/health.db
+ExecStart=/opt/RSA_Health/.venv/bin/python -m orchestrator.orchestrator --db /opt/RSA_Health/health.db
 Restart=on-failure
 RestartSec=10
 
@@ -300,7 +300,7 @@ De `folder_id` vind je door de Drive-map `PipelineStatus/` te openen in de brows
 ### Stap 3: Genereer het token (eenmalig)
 
 ```bash
-uv run python -m lib.orchestrator --db health.db
+uv run python -m orchestrator.orchestrator --db health.db
 ```
 
 De eerste keer opent er een browser venster. Log in met je Google-account en geef toegang. Daarna wordt het token opgeslagen in `gdrive_token.pkl` en automatisch vernieuwd.
