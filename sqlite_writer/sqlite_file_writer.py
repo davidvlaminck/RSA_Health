@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_PATH = Path(os.environ.get("DB_PATH", "/opt/data-platform/health.db"))
+DB_PATH = Path(os.environ.get("DB_PATH", "/opt/data-platform/RSA_Health/health.db"))
 QUEUE_DIR = Path(os.environ.get("SQLITE_QUEUE_DIR", "/opt/data-platform/sqlite_queue"))
 PENDING_DIR = QUEUE_DIR / "pending"
 PROCESSING_DIR = QUEUE_DIR / "processing"

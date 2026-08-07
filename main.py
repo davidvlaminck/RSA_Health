@@ -1,3 +1,4 @@
+import json
 import logging
 import socket
 import sqlite3
@@ -11,17 +12,17 @@ from pathlib import Path
 
 import psutil
 import psycopg2
-import tomli
 from arango import ArangoClient
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
-from lib.orchestrator import lifespan as orchestrator_lifespan
-from lib.pipeline_state import PipelineState
+from orchestrator.orchestrator import lifespan as orchestrator_lifespan
+from sqlite_writer.pipeline_state import PipelineState
+from sqlite_writer.sqlite_file_writer import open_database, ensure_database_schema
 from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
 
-CONFIG_PATH = Path(__file__).parent / "config.toml"
+CONFIG_PATH = Path(__file__).parent.parent / "config_rsa_health.json"
 DB_PATH = Path(__file__).parent / "health.db"
 
 
@@ -109,6 +110,10 @@ def _snapshot_loop(stop_event: threading.Event):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    conn = open_database()
+    ensure_database_schema(conn)
+    conn.close()
+
     stop_event = threading.Event()
     snapshot_thread = threading.Thread(target=_snapshot_loop, args=(stop_event,), daemon=True)
     snapshot_thread.start()
@@ -261,8 +266,8 @@ def history(range: str = "1h", limit: int = 1000):
 def load_config():
     if not CONFIG_PATH.exists():
         return [], {}
-    with CONFIG_PATH.open("rb") as f:
-        cfg = tomli.load(f)
+    with CONFIG_PATH.open("r", encoding="utf-8") as f:
+        cfg = json.load(f)
     return cfg.get("databases", []), cfg.get("logs", {}).get("directory", "")
 
 

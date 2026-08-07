@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -23,10 +24,11 @@ if str(_ROOT) not in sys.path:
 
 import sqlite3
 
-from lib.pipeline_state import PipelineState
+from sqlite_writer.pipeline_state import PipelineState
+from sqlite_writer.sqlite_file_writer import ensure_database_schema, open_database
 
 DB_PATH = Path(__file__).resolve().parent.parent / "health.db"
-CONFIG_PATH = DB_PATH.parent / "config.toml"
+CONFIG_PATH = DB_PATH.parent / "config.json"
 LOCAL_TZ = ZoneInfo("Europe/Brussels")
 
 
@@ -201,9 +203,8 @@ class PipelineOrchestrator:
     def _load_drive_config(self):
         if not CONFIG_PATH.exists():
             return None
-        import tomli
-        with CONFIG_PATH.open("rb") as f:
-            cfg = tomli.load(f)
+        with CONFIG_PATH.open("r", encoding="utf-8") as f:
+            cfg = json.load(f)
         drive = cfg.get("drive", {})
         if not drive:
             return None
@@ -291,6 +292,10 @@ async def lifespan(app: FastAPI):
 
 
 def run_standalone(db_path: str):
+    conn = open_database()
+    ensure_database_schema(conn)
+    conn.close()
+
     pipeline = PipelineState(db_path)
     orchestrator = PipelineOrchestrator(pipeline)
     orchestrator.start()

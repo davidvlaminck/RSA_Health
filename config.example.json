@@ -1,0 +1,29 @@
+{
+  "databases": [
+    {
+      "type": "arangodb",
+      "host": "localhost",
+      "port": 8529,
+      "username": "root",
+      "password": "changeme",
+      "database": "_system"
+    },
+    {
+      "type": "postgresql",
+      "host": "localhost",
+      "port": 5432,
+      "username": "postgres",
+      "password": "changeme",
+      "database": "awvinfra"
+    }
+  ],
+  "logs": {
+    "directory": "/opt/data-platform/logs"
+  },
+  "drive": {
+    "credentials_file": "/path/to/client_secret.json",
+    "token_file": "/path/to/gdrive_token.pkl",
+    "folder_id": "your-drive-folder-id",
+    "poll_interval_seconds": 60
+  }
+}

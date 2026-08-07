@@ -1,0 +1,17 @@
+
+Description=RSA Health Pipeline Orchestrator
+After=network.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/data-platform/RSA_Health
+ExecStart=/home/deploy/.local/bin/uv run python -m lib.orchestrator --db /opt/data-platform/RSA_Health/health.db
+StandardOutput=append:/opt/data-platform/logs/rsa_orchestrator.log
+StandardError=append:/opt/data-platform/logs/rsa_orchestrator.log
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
