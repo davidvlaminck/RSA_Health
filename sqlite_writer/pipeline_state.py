@@ -22,12 +22,15 @@ class PipelineState:
         return conn
 
     def get(self) -> dict | None:
-        with self._conn() as conn:
+        conn = self._conn()
+        try:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT phase, status, updated_at, message FROM pipeline_state WHERE id = 1"
             ).fetchone()
             return dict(row) if row else None
+        finally:
+            conn.close()
 
     def update(self, phase: str, status: str, message: str = ""):
         enqueue_sqlite_job(
@@ -41,7 +44,8 @@ class PipelineState:
         )
 
     def get_history(self) -> dict:
-        with self._conn() as conn:
+        conn = self._conn()
+        try:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
                 SELECT h.phase, h.status, h.updated_at, h.message
@@ -69,6 +73,8 @@ class PipelineState:
                     }
                 )
             return result
+        finally:
+            conn.close()
 
 
 def _now():

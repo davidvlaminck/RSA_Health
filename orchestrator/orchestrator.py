@@ -76,8 +76,8 @@ class PipelineOrchestrator:
             except Exception as exc:
                 try:
                     self.pipeline.update("orchestrator", "failed", f"Fout: {exc}")
-                except sqlite3.OperationalError:
-                    logging.error(f"SQLite fout bij loggen van orchestrator fout: {exc}")
+                except Exception as log_exc:
+                    logging.error(f"Fout bij loggen van orchestrator fout: {log_exc}")
             time.sleep(self.POLL_INTERVAL)
 
     def _tick(self):
