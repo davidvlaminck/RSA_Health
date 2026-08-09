@@ -522,7 +522,7 @@
             const formatTime = (iso) => {
                 if (!iso) return '';
                 const d = new Date(iso);
-                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
             };
 
             let html = '<div class="pipeline-diagram">';
@@ -636,7 +636,7 @@
             const snapshots = history?.snapshots || [];
             const labels = snapshots.map(s => {
                 const d = new Date(s.timestamp);
-                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
             });
             const cpuData = snapshots.map(s => s.cpu_percent ?? null);
             const memData = snapshots.map(s => s.mem_percent ?? null);
@@ -723,7 +723,7 @@
                 : [];
             const dbLabels = rawTimestamps.map(ts => {
                 const d = new Date(ts);
-                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
             });
 
             const dbDatasets = dbKeys.map((key, idx) => {
