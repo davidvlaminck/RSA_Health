@@ -8,34 +8,107 @@ This repository serves two main goals:
 
 ## Communicatiemodel
 
-Alle pipeline-componenten schrijven hun status **rechtstreeks** naar de SQLite-database
-(`health.db` → tabel `pipeline_state`). De FastAPI-API (`/pipeline/update`) is alleen bedoeld
-voor externe tools (Power Automate, handmatige diagnostiek).
+### Reader vs Writer
 
-Als de `rsa-health` service down is, kunnen de scripts dus nog steeds rapporteren en kan de
-orchestrator (in een apart proces) nog altijd functioneren.
+**Lezen (reading)** — Externe scripts en API-endpoints mogen **rechtstreeks** uit `health.db` lezen. Dit is veilig en vereist geen tussenlaag.
 
-### Componenten die rechtstreeks naar SQLite schrijven
+**Schrijven (writing)** — Alle schrijfacties naar SQLite gaan via een **JSON file queue**. Dit voorkomt write-lock conflicten als meerdere processen tegelijk schrijven. Er is precies één dedicated writer die de queue consumeert en naar SQLite schrijft.
 
-- **Arango-sync** (`run_arango_sync()` in `main.py`) — starten via subprocess, status updates
-  direct naar `pipeline_state`
-- **PostGIS-sync** (AWVInfraPostGISSyncer) — eigen code, moet `update_pipeline_state()` aanroepen
-- **RSA** (`ReportLoopRunner`) — gebruikt `PipelineStatusReporter` die direct naar SQLite schrijft
+```text
+producer processen (rsa_health, orchestrator, externe scripts)
+        |
+        v
+JSON-bestandjes in /opt/data-platform/sqlite_queue/pending/
+        |
+        v
+sqlite_file_writer.py (enigste proces dat naar SQLite schrijft)
+        |
+        v
+health.db
+```
+
+### Wat de writer verwerkt
+
+De writer verwerkt alleen de volgende acties:
+
+- `insert_snapshot` — server health snapshot
+- `insert_db_snapshot` — database health snapshot
+- `prune_snapshots` — oude snapshots opschonen
+- `update_pipeline_state` — pipeline status updates
+
+### Wat externe repos/scripts doen
+
+Externe repos en scripts die de pipeline willen bijwerken, gebruiken **alleen** `update_pipeline_state`. Ze moeten **niet** direct naar SQLite schrijven.
+
+Gebruik de producer-helper:
+
+```python
+from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
+
+enqueue_sqlite_job(
+    action="update_pipeline_state",
+    payload={
+        "phase": "rsa_queries",
+        "status": "completed",
+        "updated_at": "2026-08-09T20:00:00Z",
+        "message": "RSA queries voltooid",
+    },
+)
+```
+
+De writer verwerkt deze job later asynchroon.
+
+### Waarom een file queue?
+
+SQLite ondersteunt maar één actieve writer tegelijk. WAL helpt readers en één writer, maar lost meerdere gelijktijdige writers niet volledig op. Voor deze use-case (lage schrijffrequentie, geen extra afhankelijkheden) is een file-based queue met JSON-bestanden eenvoudig, transparant en robuust.
+
+## Componenten
+
+### rsa_health (FastAPI service)
+
+De FastAPI-app serveert het dashboard en de health API. Hij voert zelf ook health-checks uit en plaatst snapshots in de queue via `enqueue_sqlite_job()`.
+
+```bash
+uv run uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+### sqlite_file_writer (aparte service)
+
+De writer consumeert de JSON file queue en schrijft naar `health.db`. Hij draait als **afzonderlijke systemd service**.
+
+```bash
+sudo systemctl start sqlite_file_writer.service
+```
 
 ### Orchestrator
 
-De orchestrator observeert `pipeline_state` en coördineert de overgangen. Hij draait
-als **afzonderlijke service** (zie hieronder). De FastAPI-app start de orchestrator
-niet standaard — dit kan via de `ORCHESTRATOR_ENABLED` environment variable als ze
-alsnog samen willen draaien.
+De orchestrator observeert `pipeline_state` in `health.db` en coördineert de pipeline-overgangen. Hij draait als **afzonderlijke service**.
+
+```bash
+uv run python -m orchestrator.orchestrator --db health.db
+```
 
 ## Pipeline Orchestrator
 
-De orchestrator draait als **afzonderlijke service**. Hij observeert de
-`pipeline_state` tabel in `health.db` (SQLite) en coördineert de overgangen.
-Externe services rapporteren hun status via directe SQLite-updates.
+De orchestrator draait als **afzonderlijke service**. Hij observeert de `pipeline_state` tabel in `health.db` (SQLite) en coördineert de overgangen.
 
-Pipeline-fases (volgorde):
+### Pipeline Fases
+
+| Fase                       | Betekenis                                              |
+|----------------------------|--------------------------------------------------------|
+| idle                       | Wacht op volgende pipeline run                         |
+| sharepoint_to_drive        | SharePoint → Drive marker detectie                     |
+| drive_download             | Drive download gestart                                 |
+| arango_sync                | ArangoDB synchronisatie                                |
+| postgis_sync_pausing       | PostGIS sync pauzeren                                  |
+| postgis_sync_paused        | PostGIS sync gepauzeerd                                |
+| rsa_queries                | RSA queries uitvoeren                                  |
+| postgis_sync_resuming      | PostGIS sync hervatten                                 |
+| postgis_sync_running       | PostGIS sync actief                                    |
+| drive_upload               | Drive upload gestart                                   |
+| drive_to_sharepoint        | Drive → SharePoint marker detectie                     |
+
+### Volgorde
 
 ```
 idle → sharepoint_to_drive → drive_download → arango_sync →
@@ -44,7 +117,7 @@ postgis_sync_resuming → postgis_sync_running → drive_upload →
 drive_to_sharepoint → (reset om middernacht)
 ```
 
-Timeouts:
+### Timeouts
 
 | Fase                      | Timeout | Toelichting                                    |
 |---------------------------|---------|-----------------------------------------------|
@@ -53,35 +126,123 @@ Timeouts:
 | rsa_queries               | 3 uur   |                                               |
 | postgis_sync_running      | 10 min  |                                               |
 
-### RSA Health (FastAPI service)
+### Geldige statussen
 
-```bash
-uv run uvicorn main:app --host 0.0.0.0 --port 8000
+| Status    | Betekenis                                    |
+|-----------|----------------------------------------------|
+| starting  | Actie wordt gestart                          |
+| running   | Actie is bezig                               |
+| completed | Actie succesvol voltooid                     |
+| failed    | Actie mislukt                                |
+| aborted   | Actie werd afgebroken (zeldzaam, intern)     |
+
+De orchestrator zelf zet `starting` wanneer een fase begint. Externe scripts en services rapporteren meestal `running`, `completed` of `failed`.
+
+Voorbeeld van een complete status-update voor een externe script:
+
+```python
+from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
+
+enqueue_sqlite_job(
+    action="update_pipeline_state",
+    payload={
+        "phase": "rsa_queries",
+        "status": "running",
+        "updated_at": "2026-08-09T20:00:00Z",
+        "message": "RSA queries starten",
+    },
+)
 ```
 
-Bezoek `http://<server-ip>:8000/` — elk pad redirect naar het dashboard (`/`), terwijl
-`/health` en `/history` toegankelijk blijven als API endpoints.
+Wanneer de taak klaar is:
 
-De orchestrator wordt **niet** gestart als onderdeel van deze service.
-
-### Pipeline Orchestrator (losse service)
-
-```bash
-uv run python -m orchestrator.orchestrator --db health.db
+```python
+enqueue_sqlite_job(
+    action="update_pipeline_state",
+    payload={
+        "phase": "rsa_queries",
+        "status": "completed",
+        "updated_at": "2026-08-09T21:30:00Z",
+        "message": "RSA queries voltooid",
+    },
+)
 ```
 
-Met systemd (`/etc/systemd/system/rsa-health-orchestrator.service`):
+Bij een fout:
+
+```python
+enqueue_sqlite_job(
+    action="update_pipeline_state",
+    payload={
+        "phase": "rsa_queries",
+        "status": "failed",
+        "updated_at": "2026-08-09T21:35:00Z",
+        "message": "Database time-out",
+    },
+)
+```
+
+## Services
+
+### rsa_health.service
 
 ```ini
 [Unit]
-Description=RSA Health Pipeline Orchestrator
+Description=RSA Health FastAPI
 After=network.target
 
 [Service]
 Type=simple
-User=rsahealth
-WorkingDirectory=/opt/RSA_Health
-ExecStart=/opt/RSA_Health/.venv/bin/python -m orchestrator.orchestrator --db /opt/RSA_Health/health.db
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/data-platform/RSA_Health
+ExecStart=/home/deploy/.local/bin/uv run uvicorn main:app --host 127.0.0.1 --port 8000
+StandardOutput=append:/opt/data-platform/logs/rsa_health.log
+StandardError=append:/opt/data-platform/logs/rsa_health.log
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### sqlite_file_writer.service
+
+```ini
+[Unit]
+Description=SQLite File Queue Writer
+After=network.target
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/data-platform
+Environment="DB_PATH=/opt/data-platform/RSA_Health/health.db"
+Environment="SQLITE_QUEUE_DIR=/opt/data-platform/sqlite_queue"
+ExecStart=/usr/bin/python3 /opt/data-platform/sqlite_file_writer.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### rsa-health-orchestrator.service
+
+```ini
+[Unit]
+Description=RSA Health Pipeline Orchestrator
+After=network.target rsa-health.service
+
+[Service]
+Type=simple
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/data-platform/RSA_Health
+ExecStart=/opt/data-platform/RSA_Health/.venv/bin/python -m orchestrator.orchestrator --db /opt/data-platform/RSA_Health/health.db
 Restart=on-failure
 RestartSec=10
 
@@ -89,68 +250,36 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-Activeren en starten:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now rsa-health-orchestrator.service
-```
-
-### Samen draaien (optioneel)
-
-Als je de orchestrator wél als onderdeel van de FastAPI service wilt starten,
-zet dan `ORCHESTRATOR_ENABLED=true`:
-
-```bash
-ORCHESTRATOR_ENABLED=true uv run uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-### Opmerking
-
-Alle services delen dezelfde `health.db` SQLite-database voor `pipeline_state`.
-Als de orchestrator crasht, blijven de andere services (Arango-sync, PostGIS-sync,
-RSA) hun status rapporteren. De orchestrator kan na herstart de pipeline
-volledig hervatten.
-
-## Running
-
-```bash
-uv run uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Bezoek `http://<server-ip>:8000/` — elk pad redirect naar het dashboard (`/`), terwijl
-`/health` en `/history` toegankelijk blijven als API endpoints.
-
 ## Deployment
 
 ### 1. Kopieer project naar server
 
 ```bash
 # Op je lokale machine
-scp -r /home/davidlinux/PycharmProjects/RSA_Health rsahealth@server:/opt/
+scp -r /home/david/PycharmProjects/RSA_Health deploy@server:/opt/data-platform/
 ```
 
 Of gebruik git:
 ```bash
-ssh rsahealth@server
-cd /opt
+ssh deploy@server
+cd /opt/data-platform
 git clone <repo-url> RSA_Health
 ```
 
 ### 2. Installeer dependencies
 
 ```bash
-ssh rsahealth@server
-cd /opt/RSA_Health
+ssh deploy@server
+cd /opt/data-platform/RSA_Health
 uv sync
 ```
 
-### 3. Maak `config.toml` aan
+### 3. Maak config aan
 
 ```bash
-cp config.example.toml config.toml
+cp config.example.json config_rsa_health.json
 # Bewerk met je database credentials, Drive config, etc.
-nano config.toml
+nano config_rsa_health.json
 ```
 
 ### 4. Genereer Google Drive token (eenmalig)
@@ -161,117 +290,56 @@ uv run python -m orchestrator.orchestrator --db health.db
 
 Log in met je Google-account in de browser. Daarna wordt `gdrive_token.pkl` automatisch gebruikt.
 
-### 5. Maak systemd services aan
+### 5. Maak directory structuur aan voor de queue
 
-**`/etc/systemd/system/rsa-health.service`:**
-
-```ini
-[Unit]
-Description=RSA Health FastAPI
-After=network.target
-
-[Service]
-Type=simple
-User=rsahealth
-WorkingDirectory=/opt/RSA_Health
-ExecStart=/opt/RSA_Health/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo mkdir -p /opt/data-platform/sqlite_queue/pending
+sudo mkdir -p /opt/data-platform/sqlite_queue/processing
+sudo mkdir -p /opt/data-platform/sqlite_queue/done
+sudo mkdir -p /opt/data-platform/sqlite_queue/failed
+sudo chown -R deploy:deploy /opt/data-platform/sqlite_queue
 ```
 
-**`/etc/systemd/system/rsa-health-orchestrator.service`:**
+### 6. Installeer systemd services
 
-```ini
-[Unit]
-Description=RSA Health Pipeline Orchestrator
-After=network.target rsa-health.service
+Kopieer de servicebestanden:
 
-[Service]
-Type=simple
-User=rsahealth
-WorkingDirectory=/opt/RSA_Health
-ExecStart=/opt/RSA_Health/.venv/bin/python -m orchestrator.orchestrator --db /opt/RSA_Health/health.db
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
+```bash
+sudo cp sqlite_writer/sqlite_file_writer.service /etc/systemd/system/
+sudo cp rsa_health.service /etc/systemd/system/
+sudo cp orchestrator/rsa_orchestrator.service /etc/systemd/system/
 ```
 
-### 6. Activeer en start services
+### 7. Activeer en start services
 
 ```bash
 sudo systemctl daemon-reload
+sudo systemctl enable --now sqlite_file_writer.service
 sudo systemctl enable --now rsa-health.service
 sudo systemctl enable --now rsa-health-orchestrator.service
 ```
 
 Controleer status:
 ```bash
+sudo systemctl status sqlite_file_writer.service
 sudo systemctl status rsa-health.service
 sudo systemctl status rsa-health-orchestrator.service
 ```
 
 Logs:
 ```bash
+journalctl -u sqlite_file_writer.service -f
 journalctl -u rsa-health.service -f
 journalctl -u rsa-health-orchestrator.service -f
 ```
 
-### 7. Open firewall
-
-```bash
-# UFW
-sudo ufw allow 8000/tcp
-
-# Of firewalld
-sudo firewall-cmd --add-port=8000/tcp --permanent
-sudo firewall-cmd --reload
-```
-
-### 8. Toegang
-
-Surf naar `http://<server-ip>:8000/` — het dashboard verschijnt direct.
-
-### Optioneel: Nginx reverse proxy (aanbevolen voor productie)
-
-```bash
-sudo apt install nginx
-```
-
-**`/etc/nginx/sites-available/rsa-health`:**
-
-```nginx
-server {
-    listen 80;
-    server_name <server-ip-of-domein>;
-
-    client_max_body_size 10M;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-Activeren:
-```bash
-sudo ln -s /etc/nginx/sites-available/rsa-health /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-Nu is de pagina bereikbaar op `http://<server-ip>` (zonder poort).
-
 ## Configuration
 
-...
+Zie `config.example.json` voor de structuur. Belangrijke onderdelen:
+
+- `databases` — lijst van te monitoren databases (ArangoDB, PostgreSQL)
+- `logs.directory` — directory waar logbestanden staan voor de `/logs` endpoint
+- `drive` — Google Drive configuratie voor marker-bestanden (orchestrator)
 
 ## Google Drive OAuth setup (voor Power Automate markers)
 
@@ -283,16 +351,19 @@ De orchestrator gebruikt Google Drive om marker-bestanden te detecteren. Dit ver
 2. **APIs & Services** → **Credentials**
 3. **Create Credentials** → **OAuth client ID**
 4. Type: **Desktop app** (of **Other**)
-5. Download het JSON-bestand en sla op als bijvoorbeeld `/home/davidlinux/Documenten/AWV/resources/client_secret_RSA-API.json`
+5. Download het JSON-bestand en sla op als bijvoorbeeld `/home/deploy/Documenten/AWV/resources/client_secret_RSA-API.json`
 
-### Stap 2: Voeg toe aan `config.toml`
+### Stap 2: Voeg toe aan `config_rsa_health.json`
 
-```toml
-[drive]
-credentials_file = "/home/davidlinux/Documenten/AWV/resources/client_secret_RSA-API.json"
-token_file = "/home/davidlinux/Documenten/AWV/resources/gdrive_token.pkl"
-folder_id = "je-drive-folder-id"
-poll_interval_seconds = 60
+```json
+{
+  "drive": {
+    "credentials_file": "/home/deploy/Documenten/AWV/resources/client_secret_RSA-API.json",
+    "token_file": "/home/deploy/Documenten/AWV/resources/gdrive_token.pkl",
+    "folder_id": "je-drive-folder-id",
+    "poll_interval_seconds": 60
+  }
+}
 ```
 
 De `folder_id` vind je door de Drive-map `PipelineStatus/` te openen in de browser — de ID staat in de URL: `https://drive.google.com/drive/folders/<folder_id>`
