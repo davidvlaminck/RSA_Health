@@ -26,6 +26,18 @@ CONFIG_PATH = Path(__file__).parent.parent / 'config' / "config_rsa_health.json"
 DB_PATH = Path(__file__).parent / "health.db"
 
 
+def _configure_logging():
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    for handler in logging.root.handlers:
+        handler.setFormatter(formatter)
+    for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        for handler in logging.getLogger(name).handlers:
+            handler.setFormatter(formatter)
+
+
 class IndexAccessLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
@@ -110,6 +122,8 @@ def _snapshot_loop(stop_event: threading.Event):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _configure_logging()
+
     conn = open_database()
     ensure_database_schema(conn)
     conn.close()
