@@ -99,6 +99,7 @@ def _snapshot_loop(stop_event: threading.Event):
     global _last_prune_date
     _prune_old_snapshots()
     _last_prune_date = datetime.now(timezone.utc).date()
+    logging.info("Snapshot loop gestart (interval 30s)")
 
     while not stop_event.is_set():
         try:
@@ -110,13 +111,15 @@ def _snapshot_loop(stop_event: threading.Event):
                 db_name = db_cfg.get("database", db_cfg.get("host", "unknown"))
                 db_results.append({"name": db_name, **check_db(db_cfg)})
             save_snapshot(server, net, db_results)
+            logging.info("Snapshot opgeslagen: %d databases", len(db_results))
 
             now = datetime.now(timezone.utc)
             if _last_prune_date != now.date():
                 _last_prune_date = now.date()
                 _prune_old_snapshots()
-        except Exception:
-            pass
+                logging.info("Oude snapshots opgeruimd")
+        except Exception as exc:
+            logging.error("Fout in snapshot loop: %s", exc, exc_info=True)
         stop_event.wait(30)
 
 
