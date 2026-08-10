@@ -47,6 +47,9 @@ class PipelineState:
         conn = self._conn()
         try:
             conn.row_factory = sqlite3.Row
+            current = conn.execute(
+                "SELECT phase, status, updated_at, message FROM pipeline_state WHERE id = 1"
+            ).fetchone()
             rows = conn.execute("""
                 SELECT h.phase, h.status, h.updated_at, h.message
                 FROM pipeline_state_history h
@@ -61,6 +64,15 @@ class PipelineState:
                 ORDER BY h.phase, h.updated_at DESC
             """).fetchall()
             result: dict = {}
+            if current:
+                cp = current["phase"]
+                result[cp] = [
+                    {
+                        "status": current["status"],
+                        "updated_at": current["updated_at"],
+                        "message": current["message"],
+                    }
+                ]
             for row in rows:
                 phase = row["phase"]
                 if phase not in result:
@@ -73,6 +85,14 @@ class PipelineState:
                     }
                 )
             return result
+        finally:
+            conn.close()
+
+    def clear_history(self):
+        conn = self._conn()
+        try:
+            conn.execute("DELETE FROM pipeline_state_history")
+            conn.commit()
         finally:
             conn.close()
 

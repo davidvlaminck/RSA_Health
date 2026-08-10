@@ -110,7 +110,15 @@ class PipelineOrchestrator:
         elif phase == "sharepoint_to_drive" and status == "running":
             self._check_sharepoint_marker()
         elif phase == "sharepoint_to_drive" and status == "completed":
-            self._start_drive_download()
+            running_marker = self._find_drive_marker("sharepoint_to_drive", "running")
+            if running_marker:
+                self.pipeline.update(
+                    "sharepoint_to_drive", "running", "Nieuwe run marker gedetecteerd"
+                )
+                logging.info("SharePoint marker gedetecteerd: running (nieuwe run)")
+                self._delete_drive_marker(running_marker)
+            else:
+                self._start_drive_download()
         elif phase == "drive_download" and status == "completed":
             self._wait_for("arango_sync", "completed", self.TIMEOUT_ARANGO)
         elif phase == "arango_sync" and status == "completed":
@@ -155,6 +163,9 @@ class PipelineOrchestrator:
     def _check_sharepoint_marker(self):
         running_marker = self._find_drive_marker("sharepoint_to_drive", "running")
         if running_marker:
+            state = self.pipeline.get()
+            if state and state.get("phase") == "idle" and state.get("status") == "completed":
+                self._clear_history()
             self.pipeline.update(
                 "sharepoint_to_drive", "running", "Marker gedetecteerd"
             )
@@ -212,8 +223,16 @@ class PipelineOrchestrator:
         now_local = datetime.now(LOCAL_TZ)
         if now_local.hour == 0 and self._last_reset_date != now_local.date():
             self._last_reset_date = now_local.date()
+            state = self.pipeline.get()
+            if state and state.get("phase") == "idle" and state.get("status") == "completed":
+                logging.info("Dagelijkse reset: pipeline was al idle")
+                return
             self.pipeline.update("idle", "completed", "Dagelijkse reset")
+            self._clear_history()
             logging.info("Dagelijkse reset uitgevoerd")
+
+    def _clear_history(self):
+        self.pipeline.clear_history()
 
     def _load_drive_config(self):
         if not CONFIG_PATH.exists():
