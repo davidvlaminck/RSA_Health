@@ -63,6 +63,7 @@ class PipelineOrchestrator:
         self.running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
+        logging.info("Orchestrator loop gestart")
 
     def stop(self):
         self.running = False
@@ -91,6 +92,7 @@ class PipelineOrchestrator:
         if self._is_waiting():
             if phase == self._wait_phase and status == self._wait_status:
                 self._clear_wait()
+                logging.info("Wachten voltooid: %s=%s", phase, status)
             elif time.time() > self._wait_deadline:
                 timed_out = self._wait_phase
                 timeout_val = self._wait_timeout
@@ -100,6 +102,7 @@ class PipelineOrchestrator:
                     "failed",
                     f"Timeout na {timeout_val}s wachten op {timed_out}",
                 )
+                logging.warning("Timeout na %ss wachten op %s", timeout_val, timed_out)
             return
 
         if phase == "idle" and status == "completed":
@@ -141,6 +144,7 @@ class PipelineOrchestrator:
         self.pipeline.update(
             "orchestrator", "running", f"Wachten op {phase}={status}"
         )
+        logging.info("Wachten op %s=%s (timeout %ss)", phase, status, timeout)
 
     def _clear_wait(self):
         self._wait_phase = None
@@ -154,12 +158,14 @@ class PipelineOrchestrator:
             self.pipeline.update(
                 "sharepoint_to_drive", "running", "Marker gedetecteerd"
             )
+            logging.info("SharePoint marker gedetecteerd: running")
             self._delete_drive_marker(running_marker)
         completed_marker = self._find_drive_marker("sharepoint_to_drive", "completed")
         if completed_marker:
             self.pipeline.update(
                 "sharepoint_to_drive", "completed", "Marker gedetecteerd"
             )
+            logging.info("SharePoint marker gedetecteerd: completed")
             self._delete_drive_marker(completed_marker)
 
     def _check_drive_to_sharepoint_marker(self):
@@ -168,37 +174,46 @@ class PipelineOrchestrator:
             self.pipeline.update(
                 "drive_to_sharepoint", "starting", "Drive → SharePoint starten"
             )
+            logging.info("Drive → SharePoint marker gedetecteerd")
             self.pipeline.update(
                 "drive_to_sharepoint", "running", "Power Automate bezig"
             )
             self.pipeline.update(
                 "drive_to_sharepoint", "completed", "Marker gedetecteerd"
             )
+            logging.info("Drive → SharePoint voltooid")
             self._delete_drive_marker(marker)
 
     def _start_drive_download(self):
         self.pipeline.update("drive_download", "starting", "Drive download starten")
+        logging.info("Drive download starten")
         self.pipeline.update("drive_download", "running", "Drive download gestart")
+        logging.info("Drive download gestart")
 
     def _start_drive_upload(self):
         self.pipeline.update("drive_upload", "starting", "Drive upload starten")
+        logging.info("Drive upload starten")
         self.pipeline.update("drive_upload", "running", "Drive upload gestart")
+        logging.info("Drive upload gestart")
 
     def _start_postgis_pause(self):
         self.pipeline.update(
             "postgis_sync_pausing", "running", "PostGIS-sync pauzeren"
         )
+        logging.info("PostGIS-sync pauzeren")
 
     def _start_postgis_resume(self):
         self.pipeline.update(
             "postgis_sync_resuming", "running", "PostGIS-sync hervatten"
         )
+        logging.info("PostGIS-sync hervatten")
 
     def _daily_reset_check(self):
         now_local = datetime.now(LOCAL_TZ)
         if now_local.hour == 0 and self._last_reset_date != now_local.date():
             self._last_reset_date = now_local.date()
             self.pipeline.update("idle", "completed", "Dagelijkse reset")
+            logging.info("Dagelijkse reset uitgevoerd")
 
     def _load_drive_config(self):
         if not CONFIG_PATH.exists():
@@ -292,6 +307,7 @@ async def lifespan(app: FastAPI):
 
 
 def run_standalone(db_path: str):
+    logging.info("Orchestrator gestart (standalone)")
     conn = open_database()
     ensure_database_schema(conn)
     conn.close()
