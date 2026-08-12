@@ -149,9 +149,6 @@ class PipelineOrchestrator:
         self._wait_status = status
         self._wait_deadline = time.time() + timeout
         self._wait_timeout = timeout
-        self.pipeline.update(
-            "orchestrator", "running", f"Wachten op {phase}={status}"
-        )
         logging.info("Wachten op %s=%s (timeout %ss)", phase, status, timeout)
 
     def _clear_wait(self):
