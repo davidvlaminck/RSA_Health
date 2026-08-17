@@ -392,8 +392,47 @@ def _check_db_impl(cfg: dict) -> dict:
         return {"status": "error", "error": str(exc), "type": db_type}
 
 
+_arango_clients = {}
+_arango_clients_lock = threading.Lock()
+_pg_conns = {}
+_pg_conns_lock = threading.Lock()
+
+
+def _get_arango_client(cfg: dict):
+    cache_key = f"arangodb:{cfg.get('host')}:{cfg.get('port')}"
+    with _arango_clients_lock:
+        client = _arango_clients.get(cache_key)
+        if client is None:
+            client = ArangoClient(hosts=[f"http://{cfg['host']}:{cfg['port']}"])
+            _arango_clients[cache_key] = client
+        return client
+
+
+def _get_pg_conn(cfg: dict):
+    cache_key = f"postgresql:{cfg.get('host')}:{cfg.get('port')}:{cfg.get('database')}"
+    with _pg_conns_lock:
+        conn = _pg_conns.get(cache_key)
+        if conn is not None and conn.closed == 0:
+            return conn
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        conn = psycopg2.connect(
+            host=cfg["host"],
+            port=cfg["port"],
+            user=cfg["username"],
+            password=cfg["password"],
+            database=cfg["database"],
+            connect_timeout=5,
+        )
+        _pg_conns[cache_key] = conn
+        return conn
+
+
 def _check_arangodb(cfg: dict) -> dict:
-    client = ArangoClient(hosts=[f"http://{cfg['host']}:{cfg['port']}"])
+    client = _get_arango_client(cfg)
     sys_db = client.db(
         cfg["database"], username=cfg["username"], password=cfg["password"]
     )
@@ -410,22 +449,44 @@ def _check_arangodb(cfg: dict) -> dict:
 
 def _check_postgresql(cfg: dict) -> dict:
     start = time.perf_counter()
-    conn = psycopg2.connect(
-        host=cfg["host"],
-        port=cfg["port"],
-        user=cfg["username"],
-        password=cfg["password"],
-        database=cfg["database"],
-        connect_timeout=5,
-    )
-    conn.close()
-    latency = round((time.perf_counter() - start) * 1000, 2)
-    return {
-        "status": "ok",
-        "latency_ms": latency,
-        "database": cfg["database"],
-        "type": "postgresql",
-    }
+    try:
+        conn = _get_pg_conn(cfg)
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        latency = round((time.perf_counter() - start) * 1000, 2)
+        return {
+            "status": "ok",
+            "latency_ms": latency,
+            "database": cfg["database"],
+            "type": "postgresql",
+        }
+    except Exception:
+        cache_key = f"postgresql:{cfg.get('host')}:{cfg.get('port')}:{cfg.get('database')}"
+        with _pg_conns_lock:
+            stale = _pg_conns.pop(cache_key, None)
+            if stale is not None:
+                try:
+                    stale.close()
+                except Exception:
+                    pass
+        start = time.perf_counter()
+        conn = psycopg2.connect(
+            host=cfg["host"],
+            port=cfg["port"],
+            user=cfg["username"],
+            password=cfg["password"],
+            database=cfg["database"],
+            connect_timeout=5,
+        )
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        latency = round((time.perf_counter() - start) * 1000, 2)
+        return {
+            "status": "ok",
+            "latency_ms": latency,
+            "database": cfg["database"],
+            "type": "postgresql",
+        }
 
 
 @app.get("/health")
