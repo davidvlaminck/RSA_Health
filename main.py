@@ -292,6 +292,23 @@ def history(range: str = "1h", limit: int = 1000):
     }
 
 
+_health_cache = {}
+_health_cache_lock = threading.Lock()
+_HEALTH_CACHE_TTL = 30
+
+
+def _cached(cache_key, fn, *args, **kwargs):
+    now = time.time()
+    with _health_cache_lock:
+        entry = _health_cache.get(cache_key)
+        if entry and now - entry[0] < _HEALTH_CACHE_TTL:
+            return entry[1]
+    result = fn(*args, **kwargs)
+    with _health_cache_lock:
+        _health_cache[cache_key] = (now, result)
+    return result
+
+
 def load_config():
     if not CONFIG_PATH.exists():
         return [], {}
@@ -305,6 +322,10 @@ def bytes_to_gb(value_bytes: int) -> float:
 
 
 def check_network() -> dict:
+    return _cached("network", _check_network_impl)
+
+
+def _check_network_impl() -> dict:
     targets = [
         ("1.1.1.1", 53),
         ("8.8.8.8", 53),
@@ -331,6 +352,10 @@ def check_network() -> dict:
 
 
 def check_server() -> dict:
+    return _cached("server", _check_server_impl)
+
+
+def _check_server_impl() -> dict:
     cpu_percent = psutil.cpu_percent(interval=0.5)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
@@ -351,6 +376,11 @@ def check_server() -> dict:
 
 
 def check_db(cfg: dict) -> dict:
+    cache_key = f"db:{json.dumps(cfg, sort_keys=True)}"
+    return _cached(cache_key, _check_db_impl, cfg)
+
+
+def _check_db_impl(cfg: dict) -> dict:
     db_type = cfg.get("type", "unknown")
     try:
         if db_type == "arangodb":
