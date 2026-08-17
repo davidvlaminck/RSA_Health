@@ -783,7 +783,7 @@
             try {
                 const [healthRes, historyRes, pipelineRes] = await Promise.all([
                     fetch('/health'),
-                    fetch(`/history?range=${currentRange}&limit=500`),
+                     fetch(`/history?range=${currentRange}`),
                     fetch('/pipeline/state'),
                 ]);
                 const healthData = await healthRes.json();

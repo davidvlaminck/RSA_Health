@@ -269,9 +269,21 @@ RANGE_MAP = {
 }
 
 
+RANGE_MIN_SNAPSHOTS = {
+    "5m": 20,
+    "1h": 200,
+    "12h": 2000,
+    "1d": 4000,
+    "7d": 25000,
+    "1mo": 50000,
+}
+
+
 @app.get("/history")
 def history(range: str = "1h", limit: int = 1000):
     delta = RANGE_MAP.get(range, timedelta(hours=1))
+    min_limit = RANGE_MIN_SNAPSHOTS.get(range, 1000)
+    limit = max(limit, min_limit)
     after = (datetime.now(timezone.utc) - delta).isoformat().replace("+00:00", "Z")
     return {
         "range": range,
