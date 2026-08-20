@@ -60,7 +60,7 @@
 
         .dashboard {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            grid-template-columns: repeat(3, 1fr);
             gap: 1.25rem;
             max-width: 1200px;
             margin: 0 auto;
@@ -90,7 +90,7 @@
             padding: 1.25rem;
             box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
         }
-        .card.wide {
+        .card.half-width {
             grid-column: span 2;
         }
         .card h2 {
@@ -128,8 +128,11 @@
         }
 
         @media (max-width: 900px) {
-            .card.wide {
-                grid-column: span 1;
+            .dashboard {
+                grid-template-columns: 1fr;
+            }
+            .card.half-width {
+                grid-column: 1 / -1;
             }
         }
 
@@ -382,19 +385,17 @@
                     <h2>Pipeline Status</h2>
                     <div id="pipeline-content">Loading...</div>
                 </div>
-                <div class="card" id="server-card">
-                    <h2>Server</h2>
+                <div class="card" id="server-db-card">
+                    <h2>Server & Databases</h2>
                     <div id="server-content">Loading...</div>
+                    <hr style="border-color:#334155;margin:0.75rem 0">
+                    <div id="db-content">Loading...</div>
                 </div>
                 <div class="card" id="network-card">
                     <h2>Network</h2>
                     <div id="network-content">Loading...</div>
                 </div>
-                <div class="card" id="db-card">
-                    <h2>Databases</h2>
-                    <div id="db-content">Loading...</div>
-                </div>
-                <div class="card wide" id="services-card">
+                <div class="card half-width" id="services-card">
                     <h2>Services</h2>
                     <div id="services-content">Loading...</div>
                 </div>
