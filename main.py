@@ -13,13 +13,13 @@ from pathlib import Path
 import psutil
 import psycopg2
 from arango import ArangoClient
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from orchestrator.orchestrator import lifespan as orchestrator_lifespan
 from sqlite_writer.pipeline_state import PipelineState
-from sqlite_writer.sqlite_file_writer import open_database, ensure_database_schema
+from sqlite_writer.sqlite_file_writer import ensure_database_schema, open_database
 from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
 
 CONFIG_PATH = Path(__file__).parent.parent / 'config' / "config_rsa_health.json"
@@ -47,6 +47,44 @@ class IndexAccessLogFilter(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(IndexAccessLogFilter())
 
 pipeline = PipelineState(DB_PATH)
+
+_BLOCKED_IPS = {
+    "213.209.159.175",
+    "139.135.43.104",
+    "186.236.254.56",
+    "81.19.219.216",
+    "188.240.59.20",
+}
+
+
+class _RateLimiter:
+    def __init__(self, max_requests: int = 60, window: int = 60):
+        self._max = max_requests
+        self._window = window
+        self._hits: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, ip: str) -> bool:
+        now = time.time()
+        with self._lock:
+            stamps = [t for t in self._hits.get(ip, []) if now - t < self._window]
+            self._hits[ip] = stamps
+            if len(stamps) >= self._max:
+                return False
+            stamps.append(now)
+            return True
+
+
+_rate_limiter = _RateLimiter(max_requests=30, window=60)
+
+
+async def _security_middleware(request: Request, call_next):
+    ip = request.client.host if request.client else "unknown"
+    if ip in _BLOCKED_IPS:
+        return Response(content="Forbidden", status_code=403)
+    if not _rate_limiter.allow(ip):
+        return Response(content="Rate limit exceeded", status_code=429)
+    return await call_next(request)
 
 
 def save_snapshot(server: dict, net: dict, db_results: list[dict]):
@@ -143,6 +181,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.middleware("http")(_security_middleware)
 
 
 def get_history(limit: int = 100, after: str | None = None):
@@ -536,6 +575,11 @@ def pipeline_update(payload: PipelineUpdate):
 # This endpoint exists for external tools (Power Automate, diagnostics) only.
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return Response(status_code=204)
+
+
 @app.get("/")
 def index():
     return FileResponse("static/index.html")
@@ -625,4 +669,4 @@ def _parse_log_time(line: str) -> datetime | None:
 
 @app.get("/{full_path:path}")
 def redirect_all(full_path: str):
-    return RedirectResponse(url="/")
+    return Response(status_code=404)
