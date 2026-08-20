@@ -90,6 +90,9 @@
             padding: 1.25rem;
             box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
         }
+        .card.wide {
+            grid-column: span 2;
+        }
         .card h2 {
             font-size: 0.85rem;
             text-transform: uppercase;
@@ -97,6 +100,37 @@
             color: #94a3b8;
             margin-bottom: 0.75rem;
             font-weight: 600;
+        }
+
+        .services-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        .services-table th,
+        .services-table td {
+            text-align: left;
+            padding: 0.45rem 0.6rem;
+            border-bottom: 1px solid #334155;
+        }
+        .services-table th {
+            color: #64748b;
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .services-table td:last-child {
+            text-align: right;
+        }
+        .services-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        @media (max-width: 900px) {
+            .card.wide {
+                grid-column: span 1;
+            }
         }
 
         .metric {
@@ -360,7 +394,7 @@
                     <h2>Databases</h2>
                     <div id="db-content">Loading...</div>
                 </div>
-                <div class="card" id="services-card">
+                <div class="card wide" id="services-card">
                     <h2>Services</h2>
                     <div id="services-content">Loading...</div>
                 </div>
@@ -633,13 +667,23 @@
             dbContent.innerHTML = dbHtml || 'No databases configured';
 
             let servicesHtml = '';
-            for (const svc of (data.services || [])) {
-                const color = svc.status === 'ok' ? 'ok' : 'error';
-                const activeSince = svc.active_since ? new Date(svc.active_since).toLocaleString() : '-';
-                servicesHtml += `
-                    <div class="metric"><span class="label">${svc.label || svc.name}</span><span class="value ${color}">${svc.active_state ? svc.active_state.toUpperCase() : 'UNKNOWN'}</span></div>
-                    <div class="metric"><span class="label">Active since</span><span class="value">${activeSince}</span></div>
-                `;
+            const services = data.services || [];
+            if (services.length > 0) {
+                servicesHtml += `<table class="services-table">
+                    <thead><tr><th>Service</th><th>Status</th><th>Active since</th></tr></thead>
+                    <tbody>`;
+                for (const svc of services) {
+                    const color = svc.status === 'ok' ? 'ok' : 'error';
+                    const activeSince = svc.active_since ? new Date(svc.active_since).toLocaleString() : '-';
+                    const statusText = svc.active_state ? svc.active_state.toUpperCase() : 'UNKNOWN';
+                    servicesHtml += `
+                        <tr>
+                            <td>${svc.label || svc.name}</td>
+                            <td class="value ${color}">${statusText}</td>
+                            <td style="text-align:right">${activeSince}</td>
+                        </tr>`;
+                }
+                servicesHtml += `</tbody></table>`;
             }
             servicesContent.innerHTML = servicesHtml || 'No services configured';
         }

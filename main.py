@@ -60,9 +60,17 @@ def _get_systemd_service_info(service_name: str) -> dict | None:
                 props[key.strip()] = value.strip()
         active_state = props.get("ActiveState", "unknown")
         active_enter = props.get("ActiveEnterTimestamp", "")
+        iso_timestamp = None
+        if active_enter:
+            m = __import__("re").search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", active_enter)
+            if m:
+                try:
+                    iso_timestamp = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").isoformat()
+                except Exception:
+                    pass
         return {
             "active_state": active_state,
-            "active_enter_timestamp": active_enter if active_enter else None,
+            "active_enter_timestamp": iso_timestamp,
             "load_state": props.get("LoadState", "unknown"),
             "sub_state": props.get("SubState", "unknown"),
         }
