@@ -199,7 +199,7 @@ class _RateLimiter:
             return True
 
 
-_rate_limiter = _RateLimiter(max_requests=30, window=60)
+_rate_limiter = _RateLimiter(max_requests=120, window=60)
 
 
 async def _security_middleware(request: Request, call_next):
