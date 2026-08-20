@@ -360,6 +360,10 @@
                     <h2>Databases</h2>
                     <div id="db-content">Loading...</div>
                 </div>
+                <div class="card" id="services-card">
+                    <h2>Services</h2>
+                    <div id="services-content">Loading...</div>
+                </div>
                 <div class="card" id="logs-card">
                     <h2>Logs</h2>
                     <div id="logs-content">
@@ -419,6 +423,7 @@
         const serverContent = document.getElementById('server-content');
         const networkContent = document.getElementById('network-content');
         const dbContent = document.getElementById('db-content');
+        const servicesContent = document.getElementById('services-content');
         const pipelineContent = document.getElementById('pipeline-content');
         const updatedEl = document.getElementById('updated');
 
@@ -616,20 +621,27 @@
             let dbHtml = '';
             for (const entry of dbEntries) {
                 const label = entry.type || entry.name;
-                const info = entry;
-                const color = info.status === 'ok' ? 'ok' : 'error';
+                const color = entry.status === 'ok' ? 'ok' : 'error';
                 dbHtml += `
-                    <div class="metric"><span class="label">${label}</span><span class="value ${color}">${info.status.toUpperCase()}</span></div>
+                    <div class="metric"><span class="label">${label}</span><span class="value ${color}">${entry.status.toUpperCase()}</span></div>
                 `;
-                if (info.latency_ms !== undefined) {
-                    dbHtml += `<div class="metric"><span class="label">Latency</span><span class="value">${info.latency_ms} ms</span></div>`;
-                }
-                if (info.error) {
-                    dbHtml += `<div class="error-box">${info.error}</div>`;
+                if (entry.error) {
+                    dbHtml += `<div class="error-box">${entry.error}</div>`;
                 }
             }
 
             dbContent.innerHTML = dbHtml || 'No databases configured';
+
+            let servicesHtml = '';
+            for (const svc of (data.services || [])) {
+                const color = svc.status === 'ok' ? 'ok' : 'error';
+                const activeSince = svc.active_since ? new Date(svc.active_since).toLocaleString() : '-';
+                servicesHtml += `
+                    <div class="metric"><span class="label">${svc.label || svc.name}</span><span class="value ${color}">${svc.active_state ? svc.active_state.toUpperCase() : 'UNKNOWN'}</span></div>
+                    <div class="metric"><span class="label">Active since</span><span class="value">${activeSince}</span></div>
+                `;
+            }
+            servicesContent.innerHTML = servicesHtml || 'No services configured';
         }
 
         function updateCharts(history) {
@@ -781,15 +793,17 @@
         async function load() {
             triggerUpdateBar();
             try {
-                const [healthRes, historyRes, pipelineRes] = await Promise.all([
+                const [healthRes, historyRes, pipelineRes, servicesRes] = await Promise.all([
                     fetch('/health'),
                      fetch(`/history?range=${currentRange}`),
-                    fetch('/pipeline/state'),
+                     fetch('/pipeline/state'),
+                     fetch('/services'),
                 ]);
                 const healthData = await healthRes.json();
                 const historyData = await historyRes.json();
                 const pipelineData = await pipelineRes.json();
-                render(healthData, pipelineData);
+                const servicesData = await servicesRes.json();
+                render({ ...healthData, services: servicesData }, pipelineData);
                 updateCharts(historyData);
             } catch (e) {
                 serverContent.innerHTML = '<div class="error-box">Failed to load health data</div>';

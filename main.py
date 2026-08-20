@@ -24,6 +24,122 @@ from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
 
 CONFIG_PATH = Path(__file__).parent.parent / 'config' / "config_rsa_health.json"
 DB_PATH = Path(__file__).parent / "health.db"
+SERVICES_STATE_PATH = Path(__file__).parent / "services_state.json"
+
+
+def _load_service_state() -> dict:
+    if SERVICES_STATE_PATH.exists():
+        try:
+            return json.loads(SERVICES_STATE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_service_state(state: dict) -> None:
+    try:
+        SERVICES_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _get_systemd_service_info(service_name: str) -> dict | None:
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", service_name, "--no-pager", "--plain"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        props = {}
+        for line in result.stdout.splitlines():
+            if "=" in line:
+                key, _, value = line.partition("=")
+                props[key.strip()] = value.strip()
+        active_state = props.get("ActiveState", "unknown")
+        active_enter = props.get("ActiveEnterTimestamp", "")
+        return {
+            "active_state": active_state,
+            "active_enter_timestamp": active_enter if active_enter else None,
+            "load_state": props.get("LoadState", "unknown"),
+            "sub_state": props.get("SubState", "unknown"),
+        }
+    except Exception:
+        return None
+
+
+def _detect_service_restart(service_name: str, info: dict, state: dict) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    is_running = info.get("active_state") == "active"
+    active_since = info.get("active_enter_timestamp")
+    prev = state.get(service_name, {})
+    if is_running and active_since:
+        if prev.get("active_enter_timestamp") != active_since:
+            state[service_name] = {
+                "active_state": info["active_state"],
+                "active_enter_timestamp": active_since,
+                "last_restart_detected_at": now,
+            }
+            logging.info("Service restart detected: %s (active since %s)", service_name, active_since)
+        else:
+            state[service_name] = {
+                "active_state": info["active_state"],
+                "active_enter_timestamp": active_since,
+                "last_restart_detected_at": prev.get("last_restart_detected_at"),
+            }
+    else:
+        state[service_name] = {
+            "active_state": info.get("active_state", "unknown"),
+            "active_enter_timestamp": None,
+            "last_restart_detected_at": prev.get("last_restart_detected_at"),
+        }
+    return dict(state[service_name])
+
+
+def _get_configured_services() -> list[dict]:
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg.get("services", [])
+    except Exception:
+        return []
+
+
+def _collect_services() -> list[dict]:
+    services_cfg = _get_configured_services()
+    if not services_cfg:
+        return []
+    state = _load_service_state()
+    results = []
+    for svc in services_cfg:
+        name = svc.get("name", "")
+        label = svc.get("label", name)
+        if not name:
+            continue
+        info = _get_systemd_service_info(name)
+        if info is None:
+            results.append({
+                "name": name,
+                "label": label,
+                "status": "unknown",
+                "active_since": None,
+                "last_restart_detected_at": None,
+            })
+            continue
+        status = "ok" if info["active_state"] == "active" else "error"
+        current = _detect_service_restart(name, info, state)
+        _save_service_state(state)
+        results.append({
+            "name": name,
+            "label": label,
+            "status": status,
+            "active_state": info["active_state"],
+            "active_since": current.get("active_enter_timestamp"),
+            "last_restart_detected_at": current.get("last_restart_detected_at"),
+        })
+    return results
 
 
 def _configure_logging():
@@ -547,6 +663,11 @@ def health():
 
     save_snapshot(server, net, response["databases"])
     return response
+
+
+@app.get("/services")
+def services():
+    return _collect_services()
 
 
 class PipelineUpdate(BaseModel):

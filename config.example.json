@@ -25,5 +25,9 @@
     "token_file": "/path/to/gdrive_token.pkl",
     "folder_id": "your-drive-folder-id",
     "poll_interval_seconds": 60
-  }
+  },
+  "services": [
+    {"name": "rsa_health.service", "label": "RSA Health API"},
+    {"name": "cron.service", "label": "Cron"}
+  ]
 }
