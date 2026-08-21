@@ -1,6 +1,7 @@
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import sqlite3
 
@@ -9,6 +10,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
+
+LOCAL_TZ = ZoneInfo("Europe/Brussels")
 
 
 class PipelineState:
@@ -29,6 +32,31 @@ class PipelineState:
                 "SELECT phase, status, updated_at, message FROM pipeline_state WHERE id = 1"
             ).fetchone()
             return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def get_today_updates(self) -> list[dict]:
+        conn = self._conn()
+        try:
+            conn.row_factory = sqlite3.Row
+            now_local = datetime.now(LOCAL_TZ)
+            today_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start_utc = today_start.astimezone(timezone.utc)
+            cutoff = today_start_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            rows = conn.execute(
+                """
+                SELECT phase, status, updated_at, message
+                FROM pipeline_state_history
+                WHERE updated_at >= ?
+                UNION ALL
+                SELECT phase, status, updated_at, message
+                FROM pipeline_state
+                WHERE updated_at >= ?
+                ORDER BY updated_at ASC
+                """,
+                (cutoff, cutoff),
+            ).fetchall()
+            return [dict(row) for row in rows]
         finally:
             conn.close()
 
@@ -91,6 +119,15 @@ class PipelineState:
     def clear_history(self):
         conn = self._conn()
         try:
+            conn.execute("DELETE FROM pipeline_state_history")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def reset(self):
+        conn = self._conn()
+        try:
+            conn.execute("DELETE FROM pipeline_state")
             conn.execute("DELETE FROM pipeline_state_history")
             conn.commit()
         finally:
