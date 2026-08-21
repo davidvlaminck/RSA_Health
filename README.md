@@ -4,7 +4,13 @@ This repository serves two main goals:
 
 1. **Health page and API** — It exposes a health endpoint that serves a web page showing server health parameters, as well as an API endpoint that returns those parameters and their values in JSON format so they can be fetched programmatically.
 
-2. **Monitoring service** — It runs a background service on the server that continuously checks those health parameters and sends a notification to a Teams webhook if one or more parameters fall below a configured threshold.
+2. **Pipeline orchestration** — It coordinates a nightly data pipeline by tracking the status of every phase in a central SQLite database and signaling independent services when to start, pause, or resume.
+
+## Kernconcept
+
+Elke pipeline-run start om **middernacht lokale tijd (Europe/Brussels)**. Bij een reset of crash bevragen alle scripts eerst SQLite (`health.db`) om te weten waar in de pipeline ze zitten. SQLite is de **enige bron van waarheid** voor de huidige fase, status en bericht.
+
+Er lopen **verschillende processen naast elkaar** (Arango-sync, PostGIS-sync, RSA-queries). De orchestrator observeert alleen de status en coördineert de overgangen en Drive-stappen. Het is dus niet zo dat alleen de laatste fase telt — elke fase rapporteert zelf zijn status.
 
 ## Communicatiemodel
 
@@ -62,7 +68,148 @@ De writer verwerkt deze job later asynchroon.
 
 SQLite ondersteunt maar één actieve writer tegelijk. WAL helpt readers en één writer, maar lost meerdere gelijktijdige writers niet volledig op. Voor deze use-case (lage schrijffrequentie, geen extra afhankelijkheden) is een file-based queue met JSON-bestanden eenvoudig, transparant en robuust.
 
-## Componenten
+## Herstellen na crash of reset
+
+Wanneer een script hervat na een crash of reset, moet het eerst SQLite bevragen om de huidige pipeline-status te weten. Hiervoor is een functie beschikbaar die alle status-updates van **vandaag** ophaalt, zodat externe repos eenvoudig kunnen bepalen waar de pipeline staat.
+
+```python
+from sqlite_writer.pipeline_state import PipelineState
+
+pipeline = PipelineState("/opt/data-platform/RSA_Health/health.db")
+today_updates = pipeline.get_today_updates()
+```
+
+Deze functie retourneert een overzicht van alle fase-updates van de huidige dag (local Brussels time), zodat elke service weet:
+- welke fasen al zijn gestart,
+- welke fase nu actief is,
+- welke fasen nog moeten gebeuren.
+
+## Pipeline overzicht
+
+### Dagelijkse cyclus
+
+Elke nacht om middernacht (Europe/Brussels) start een nieuwe cyclus. De orchestrator reset de pipeline naar de starttoestand en iedere service begint zijn nieuwe cyclus.
+
+### De fasen
+
+| Fase                       | Betekenis                                              |
+|----------------------------|--------------------------------------------------------|
+| idle                       | Wacht op volgende pipeline run                         |
+| sharepoint_to_drive        | SharePoint → Drive marker detectie                     |
+| drive_download             | Drive download gestart                                 |
+| arango_sync                | ArangoDB synchronisatie                                |
+| postgis_sync_pausing       | PostGIS sync pauzeren                                  |
+| postgis_sync_paused        | PostGIS sync gepauzeerd                                |
+| rsa_queries                | RSA queries uitvoeren                                  |
+| postgis_sync_resuming      | PostGIS sync hervatten                                 |
+| postgis_sync_running       | PostGIS sync actief                                    |
+| drive_upload               | Drive upload gestart                                   |
+| drive_to_sharepoint        | Drive → SharePoint marker detectie                     |
+
+### Geldige statussen
+
+| Status    | Betekenis                                    |
+|-----------|----------------------------------------------|
+| starting  | Actie wordt gestart                          |
+| running   | Actie is bezig                               |
+| completed | Actie succesvol voltooid                     |
+| failed    | Actie mislukt                                |
+| aborted   | Actie werd afgebroken (zeldzaam, intern)     |
+
+### Timeouts
+
+| Fase                      | Timeout | Toelichting                                    |
+|---------------------------|---------|-----------------------------------------------|
+| arango_sync               | 4 uur   | Geen time-out in normale loop                  |
+| postgis_sync_paused       | 10 min  | Bij time-out: gaat verder zonder pauze         |
+| rsa_queries               | 4 uur   | Bij time-out: stopt rapporten, doet wel upload |
+| postgis_sync_running      | 10 min  |                                               |
+
+## Volledige nachtelijke sequentie
+
+De sequentie is **signaal-based**. De orchestrator observeert `pipeline_state` in SQLite en coördineert alleen de overgangen en de Drive-stappen. Arango-sync, PostGIS-sync en RSA draaien onafhankelijk als services; de orchestrator wacht steeds met een timeout op het verwachte signaal.
+
+```text
+00:00  Elke service start een nieuwe cyclus
+       (orchestrator reset naar idle/completed)
+
+00:00  Orchestrator              controleert sharepoint_to_drive status
+       (Power Automate plaatst marker op Drive)
+
+00:01  Orchestrator              ziet marker → sharepoint_to_drive / running
+00:30  Power Automate            sharepoint_to_drive / completed
+       (marker verwijderd na verwerking)
+
+00:31  Orchestrator              start drive_download
+       RSA                        ziet drive_download / running → start download
+00:35  RSA                        drive_download / completed
+       (of: failed → stop)
+
+       ~ RSA wacht op arango_sync = completed ~
+       (geen time-out in normale loop)
+
+03:00  Arango-sync (onafhankelijk) start → arango_sync / running
+       ~ rapporteert vordering per sub-stap (fase blijft running) ~
+04:45  Arango-sync               arango_sync / completed
+
+04:50  Orchestrator              ziet 'completed' → postgis_sync_pausing / running
+04:51  PostGIS-sync              ziet 'pausing' → onderbreekt schrijven
+       → postgis_sync_paused / completed
+
+       ~ Orchestrator wacht op 'paused' (max. 10 min) ~
+       ~ PostGIS wacht tot 08:00 op resume signaal ~
+
+05:00  RSA ReportLoopRunner (onafhankelijk) start query'n
+       → rsa_queries / running
+       (alleen als postgis_sync_paused is geregistreerd)
+       ~ rapporteert via PipelineStatusReporter ~
+
+       ~ RSA heeft 3 uur (tot 08:00) ~
+       ~ Bij time-out: stopt rapporten, maar voert wel
+         drive_upload uit en zet status = failed/time-out ~
+
+08:00  Orchestrator              → postgis_sync_resuming / running
+       (of: PostGIS start zelf resume na 08:00 bij time-out)
+
+08:01  PostGIS-sync              ziet 'resuming' → hervat schrijven
+       → postgis_sync_running / completed
+
+08:02  Orchestrator              start drive_upload
+       RSA                        ziet drive_upload / running → start upload
+08:10  RSA                        drive_upload / completed
+
+08:10+ Power Automate            start Drive → SharePoint (pollend)
+10:00  Orchestrator              marker gedetecteerd → drive_to_sharepoint / completed
+       (einde cyclus)
+
+midnight  Orchestrator            reset → idle / completed
+```
+
+### Belangrijke gedetailleerde regels
+
+1. **Herstart na crash** — Bij herstart vragen alle scripts eerst SQLite op (`get_today_updates()`) om de huidige fase te weten. Er wordt niet vanaf het begin gestart, maar vanaf waar de pipeline staat.
+
+2. **Parallelle processen** — Arango-sync, PostGIS-sync en RSA draaien onafhankelijk. De orchestrator coördineert alleen overgangen. Het is dus mogelijk dat `arango_sync = completed` is terwijl `rsa_queries` nog steeds `running` is.
+
+3. **SharePoint → Drive** — De orchestrator detecteert de marker op Google Drive en zet de fase op `running` en later `completed`. Power Automate plaatst de marker; RSA_Health verwijdert deze na verwerking.
+
+4. **Drive download** — Wordt door de orchestrator getriggerd. RSA voert de daadwerkelijke download uit en rapporteert `drive_download / completed` of `failed`.
+
+5. **Arango-sync** — Is een volledig onafhankelijke service. De orchestrator wacht op het signaal `arango_sync / completed`. In de normale loop geen time-out; de orchestrator blijft wachten tot Arango klaar is.
+
+6. **PostGIS pauzeren** — Zodra Arango klaar is, geeft de orchestrator het signaal `postgis_sync_pausing / running`. PostGIS-sync onderbreekt zijn schrijven en rapporteert `postgis_sync_paused / completed`. De orchestrator wacht max 10 minuten op dit signaal.
+
+7. **RSA-queries starten** — Pas wanneer `postgis_sync_paused / completed` is geregistreerd, start RSA met de queries. RSA controleert zelf eerst SQLite om te zien of de voorwaarde is voldaan.
+
+8. **RSA time-out (4 uur)** — Als RSA niet binnen 3 uur klaar is, stopt het met rapporten uitvoeren, maar voert het wel de overzichtssamenstelling en `drive_upload` uit. De status wordt dan `failed` of `time-out` voor `rsa_queries`. Deze update zorgt ervoor dat de orchestrator `drive_upload` kan triggeren.
+
+9. **PostGIS wacht op resume** — PostGIS-sync luistert vanaf het gepauzeerd is naar het resume-signaal. Na 08:00 (local time) start het vanzelf het resume als de orchestrator nog niet heeft getriggerd, maar documenteert dit als een time-out in de pipeline_state.
+
+10. **Drive upload** — Wordt door de orchestrator getriggerd. RSA voert de upload uit en rapporteert `drive_upload / completed`.
+
+11. **Drive → SharePoint** — Na afloop plaatst Power Automate een marker. De orchestrator detecteert deze en rondt de cyclus af met `drive_to_sharepoint / completed`.
+
+## Services
 
 ### rsa_health (FastAPI service)
 
@@ -88,101 +235,7 @@ De orchestrator observeert `pipeline_state` in `health.db` en coördineert de pi
 uv run python -m orchestrator.orchestrator --db health.db
 ```
 
-## Pipeline Orchestrator
-
-De orchestrator draait als **afzonderlijke service**. Hij observeert de `pipeline_state` tabel in `health.db` (SQLite) en coördineert de overgangen.
-
-### Pipeline Fases
-
-| Fase                       | Betekenis                                              |
-|----------------------------|--------------------------------------------------------|
-| idle                       | Wacht op volgende pipeline run                         |
-| sharepoint_to_drive        | SharePoint → Drive marker detectie                     |
-| drive_download             | Drive download gestart                                 |
-| arango_sync                | ArangoDB synchronisatie                                |
-| postgis_sync_pausing       | PostGIS sync pauzeren                                  |
-| postgis_sync_paused        | PostGIS sync gepauzeerd                                |
-| rsa_queries                | RSA queries uitvoeren                                  |
-| postgis_sync_resuming      | PostGIS sync hervatten                                 |
-| postgis_sync_running       | PostGIS sync actief                                    |
-| drive_upload               | Drive upload gestart                                   |
-| drive_to_sharepoint        | Drive → SharePoint marker detectie                     |
-
-### Volgorde
-
-```
-idle → sharepoint_to_drive → drive_download → arango_sync →
-postgis_sync_pausing → postgis_sync_paused → rsa_queries →
-postgis_sync_resuming → postgis_sync_running → drive_upload →
-drive_to_sharepoint → (reset om middernacht)
-```
-
-### Timeouts
-
-| Fase                      | Timeout | Toelichting                                    |
-|---------------------------|---------|-----------------------------------------------|
-| arango_sync               | 4 uur   | Geen time-out in normale loop                  |
-| postgis_sync_paused       | 10 min  | Bij time-out: gaat verder zonder pauze         |
-| rsa_queries               | 3 uur   |                                               |
-| postgis_sync_running      | 10 min  |                                               |
-
-### Geldige statussen
-
-| Status    | Betekenis                                    |
-|-----------|----------------------------------------------|
-| starting  | Actie wordt gestart                          |
-| running   | Actie is bezig                               |
-| completed | Actie succesvol voltooid                     |
-| failed    | Actie mislukt                                |
-| aborted   | Actie werd afgebroken (zeldzaam, intern)     |
-
-De orchestrator zelf zet `starting` wanneer een fase begint. Externe scripts en services rapporteren meestal `running`, `completed` of `failed`.
-
-Voorbeeld van een complete status-update voor een externe script:
-
-```python
-from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
-
-enqueue_sqlite_job(
-    action="update_pipeline_state",
-    payload={
-        "phase": "rsa_queries",
-        "status": "running",
-        "updated_at": "2026-08-09T20:00:00Z",
-        "message": "RSA queries starten",
-    },
-)
-```
-
-Wanneer de taak klaar is:
-
-```python
-enqueue_sqlite_job(
-    action="update_pipeline_state",
-    payload={
-        "phase": "rsa_queries",
-        "status": "completed",
-        "updated_at": "2026-08-09T21:30:00Z",
-        "message": "RSA queries voltooid",
-    },
-)
-```
-
-Bij een fout:
-
-```python
-enqueue_sqlite_job(
-    action="update_pipeline_state",
-    payload={
-        "phase": "rsa_queries",
-        "status": "failed",
-        "updated_at": "2026-08-09T21:35:00Z",
-        "message": "Database time-out",
-    },
-)
-```
-
-## Services
+## Services (systemd)
 
 ### rsa_health.service
 
@@ -235,16 +288,18 @@ WantedBy=multi-user.target
 ```ini
 [Unit]
 Description=RSA Health Pipeline Orchestrator
-After=network.target rsa-health.service
+After=network.target
 
 [Service]
 Type=simple
 User=deploy
 Group=deploy
 WorkingDirectory=/opt/data-platform/RSA_Health
-ExecStart=/opt/data-platform/RSA_Health/.venv/bin/python -m orchestrator.orchestrator --db /opt/data-platform/RSA_Health/health.db
+ExecStart=/home/deploy/.local/bin/uv run python -m orchestrator.orchestrator --db /opt/data-platform/RSA_Health/health.db
+StandardOutput=append:/opt/data-platform/logs/rsa_orchestrator.log
+StandardError=append:/opt/data-platform/logs/rsa_orchestrator.log
 Restart=on-failure
-RestartSec=10
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
