@@ -178,11 +178,20 @@ _BLOCKED_IPS = {
     "186.236.254.56",
     "81.19.219.216",
     "188.240.59.20",
+    "93.123.109.228",
+    "47.114.87.90",
+    "5.61.209.44",
+    "5.61.209.92",
+    "160.119.76.24",
+    "36.255.33.242",
+    "185.209.15.199",
+    "45.198.224.26",
+    "20.65.193.201",
 }
 
 
 class _RateLimiter:
-    def __init__(self, max_requests: int = 60, window: int = 60):
+    def __init__(self, max_requests: int = 120, window: int = 60):
         self._max = max_requests
         self._window = window
         self._hits: dict[str, list[float]] = {}
@@ -199,14 +208,28 @@ class _RateLimiter:
             return True
 
 
-_rate_limiter = _RateLimiter(max_requests=120, window=60)
+def _get_rate_limit_config() -> tuple[int, int]:
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        rate_cfg = cfg.get("rate_limit", {})
+        max_requests = rate_cfg.get("max_requests", 120)
+        window = rate_cfg.get("window", 60)
+        return max_requests, window
+    except Exception:
+        return 120, 60
+
+
+_rate_limiter = _RateLimiter(*_get_rate_limit_config())
 
 
 async def _security_middleware(request: Request, call_next):
     ip = request.client.host if request.client else "unknown"
     if ip in _BLOCKED_IPS:
+        logging.warning("Blocked request from banned IP: %s %s", ip, request.url.path)
         return Response(content="Forbidden", status_code=403)
     if not _rate_limiter.allow(ip):
+        logging.warning("Rate limit exceeded for IP: %s %s", ip, request.url.path)
         return Response(content="Rate limit exceeded", status_code=429)
     return await call_next(request)
 
@@ -689,6 +712,12 @@ def pipeline_state():
     state = pipeline.get() or {}
     history = pipeline.get_history()
     return {"current": state, "history": history}
+
+
+@app.post("/pipeline/reset")
+def pipeline_reset():
+    pipeline.reset()
+    return {"ok": True, "message": "Pipeline state reset"}
 
 
 @app.post("/pipeline/update")
