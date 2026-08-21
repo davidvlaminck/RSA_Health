@@ -115,15 +115,16 @@ Elke nacht om middernacht (Europe/Brussels) start een nieuwe cyclus. De orchestr
 | completed | Actie succesvol voltooid                     |
 | failed    | Actie mislukt                                |
 | aborted   | Actie werd afgebroken (zeldzaam, intern)     |
+| time-out  | Actie overschreef tijdslimiet; pipeline gaat verder (alleen rsa_queries) |
 
 ### Timeouts
 
 | Fase                      | Timeout | Toelichting                                    |
 |---------------------------|---------|-----------------------------------------------|
-| arango_sync               | 4 uur   | Geen time-out in normale loop                  |
+| arango_sync               | 4 uur   | Geen time-out in normale loop (= safety-net)   |
 | postgis_sync_paused       | 10 min  | Bij time-out: gaat verder zonder pauze         |
-| rsa_queries               | 4 uur   | Bij time-out: stopt rapporten, doet wel upload |
-| postgis_sync_running      | 10 min  |                                               |
+| rsa_queries               | 3 uur   | RSA rapporteert zelf time-out; orchestrator safety-net 3.5 uur |
+| postgis_sync_running      | 10 min  | Bij time-out: gaat verder naar drive_upload    |
 
 ## Volledige nachtelijke sequentie
 
@@ -152,31 +153,36 @@ De sequentie is **signaal-based**. De orchestrator observeert `pipeline_state` i
        ~ rapporteert vordering per sub-stap (fase blijft running) ~
 04:45  Arango-sync               arango_sync / completed
 
-04:50  Orchestrator              ziet 'completed' → postgis_sync_pausing / running
-04:51  PostGIS-sync              ziet 'pausing' → onderbreekt schrijven
-       → postgis_sync_paused / completed
+   04:50  Orchestrator              ziet 'completed' → postgis_sync_pausing / running
+   04:51  PostGIS-sync              ziet 'pausing' → onderbreekt schrijven
+        → schakelt over naar **view maken** (read-only modus voor RSA)
+        → postgis_sync_paused / completed
 
-       ~ Orchestrator wacht op 'paused' (max. 10 min) ~
-       ~ PostGIS wacht tot 08:00 op resume signaal ~
+        ~ Orchestrator wacht op 'paused' (max. 10 min) ~
+        ~ Bij timeout: orchestrator gaat door zonder pauze (risico acceptabel ~05:00) ~
+        ~ PostGIS wacht tot 08:00 op resume signaal (max. 4u interne safety-net) ~
 
-05:00  RSA ReportLoopRunner (onafhankelijk) start query'n
-       → rsa_queries / running
-       (alleen als postgis_sync_paused is geregistreerd)
-       ~ rapporteert via PipelineStatusReporter ~
+   05:00  RSA ReportLoopRunner (onafhankelijk) start query'n
+        → rsa_queries / running
+        (alleen als postgis_sync_paused is geregistreerd, of na 10-min timeout)
+        ~ rapporteert via PipelineStatusReporter ~
 
-       ~ RSA heeft 3 uur (tot 08:00) ~
-       ~ Bij time-out: stopt rapporten, maar voert wel
-         drive_upload uit en zet status = failed/time-out ~
+        ~ RSA heeft 3 uur (tot 08:00) ~
+        ~ RSA rapporteert zelf: completed of time-out ~
+        ~ Bij time-out: stopt rapporten, maakt overzicht,
+          zet rsa_queries = time-out → orchestrator gaat door ~
 
-08:00  Orchestrator              → postgis_sync_resuming / running
-       (of: PostGIS start zelf resume na 08:00 bij time-out)
+   08:00  Orchestrator              → postgis_sync_resuming / running
+        (of: PostGIS start zelf resume na 08:00 bij time-out)
+        ~ PostGIS documenteert self-resume als time-out in pipeline_state ~
 
-08:01  PostGIS-sync              ziet 'resuming' → hervat schrijven
-       → postgis_sync_running / completed
+   08:01  PostGIS-sync              ziet 'resuming' → hervat schrijven
+        → postgis_sync_running / completed
 
-08:02  Orchestrator              start drive_upload
-       RSA                        ziet drive_upload / running → start upload
-08:10  RSA                        drive_upload / completed
+   08:02  Orchestrator              start drive_upload
+        RSA                        ziet drive_upload / running → start upload
+        ~ RSA uploadt het (voor-geassemblede) overzicht ~
+   08:10  RSA                        drive_upload / completed
 
 08:10+ Power Automate            start Drive → SharePoint (pollend)
 10:00  Orchestrator              marker gedetecteerd → drive_to_sharepoint / completed
@@ -197,13 +203,13 @@ midnight  Orchestrator            reset → idle / completed
 
 5. **Arango-sync** — Is een volledig onafhankelijke service. De orchestrator wacht op het signaal `arango_sync / completed`. In de normale loop geen time-out; de orchestrator blijft wachten tot Arango klaar is.
 
-6. **PostGIS pauzeren** — Zodra Arango klaar is, geeft de orchestrator het signaal `postgis_sync_pausing / running`. PostGIS-sync onderbreekt zijn schrijven en rapporteert `postgis_sync_paused / completed`. De orchestrator wacht max 10 minuten op dit signaal.
+6. **PostGIS pauzeren + view maken** — Zodra Arango klaar is, geeft de orchestrator het signaal `postgis_sync_pausing / running`. PostGIS-sync onderbreekt zijn schrijven, schakelt over naar **view maken** (read-only modus, zodat RSA veilig kan readen) en rapporteert `postgis_sync_paused / completed`. De orchestrator wacht max 10 minuten op dit signaal. Loopt deze time-out, gaat de orchestrator door zonder pauze — dit is acceptabel rond 05:00 omdat de data al 5 uur gesynct is en PostgreSQL zelf altijd draait.
 
 7. **RSA-queries starten** — Pas wanneer `postgis_sync_paused / completed` is geregistreerd, start RSA met de queries. RSA controleert zelf eerst SQLite om te zien of de voorwaarde is voldaan.
 
-8. **RSA time-out (4 uur)** — Als RSA niet binnen 3 uur klaar is, stopt het met rapporten uitvoeren, maar voert het wel de overzichtssamenstelling en `drive_upload` uit. De status wordt dan `failed` of `time-out` voor `rsa_queries`. Deze update zorgt ervoor dat de orchestrator `drive_upload` kan triggeren.
+8. **RSA time-out (3 uur)** — RSA rapporteert zelf zijn time-out (niet de orchestrator). Als RSA niet binnen 3 uur klaar is, stopt het met rapporten uitvoeren, maar maakt het wel overzichtssamenstelling. RSA zet vervolgens `rsa_queries = time-out`. De orchestrator behandelt `time-out` gelijk aan `completed`: PostGIS resume wordt getriggerd, daarna `drive_upload`. RSA voert de upload uit van de voor-geassembleerde overzicht. Het `time-out` signaal is de sleutel om de orchestrator naar de volgende fase te bewegen — zonder deze status blijft de orchestrator hangen.
 
-9. **PostGIS wacht op resume** — PostGIS-sync luistert vanaf het gepauzeerd is naar het resume-signaal. Na 08:00 (local time) start het vanzelf het resume als de orchestrator nog niet heeft getriggerd, maar documenteert dit als een time-out in de pipeline_state.
+9. **PostGIS wacht op resume** — PostGIS-sync luistert vanaf het moment van pauzeren naar het resume-signaal in `pipeline_state` (fase `postgis_sync_resuming`). Na 08:00 (local time) start het vanzelf het resume als de orchestrator nog niet heeft getriggerd. Deze self-resume wordt gedocumenteerd in de pipeline_state als `time-out` in het bericht. Maximale pauzetijd is 4 uur (tot max 09:00).
 
 10. **Drive upload** — Wordt door de orchestrator getriggerd. RSA voert de upload uit en rapporteert `drive_upload / completed`.
 
@@ -213,31 +219,19 @@ midnight  Orchestrator            reset → idle / completed
 
 ### rsa_health (FastAPI service)
 
-De FastAPI-app serveert het dashboard en de health API. Hij voert zelf ook health-checks uit en plaatst snapshots in de queue via `enqueue_sqlite_job()`.
+De FastAPI-app serveert het dashboard en de health API. Hij voert zelf health-checks uit en plaatst snapshots in de queue via `enqueue_sqlite_job()`.
 
-```bash
-uv run uvicorn main:app --host 127.0.0.1 --port 8000
-```
+### sqlite_file_writer
 
-### sqlite_file_writer (aparte service)
-
-De writer consumeert de JSON file queue en schrijft naar `health.db`. Hij draait als **afzonderlijke systemd service**.
-
-```bash
-sudo systemctl start sqlite_file_writer.service
-```
+De writer consumeert de JSON file queue en schrijft naar `health.db`. Geen andere component mag direct schrijven naar SQLite.
 
 ### Orchestrator
 
 De orchestrator observeert `pipeline_state` in `health.db` en coördineert de pipeline-overgangen. Hij draait als **afzonderlijke service**.
 
-```bash
-uv run python -m orchestrator.orchestrator --db health.db
-```
+Systemd unit files:
 
-## Services (systemd)
-
-### rsa_health.service
+#### rsa_health.service
 
 ```ini
 [Unit]

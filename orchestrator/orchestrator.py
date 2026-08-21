@@ -35,7 +35,7 @@ LOCAL_TZ = ZoneInfo("Europe/Brussels")
 PIPELINE_TIMEOUTS = {
     "arango_sync": 4 * 3600,
     "postgis_pause": 600,
-    "rsa_queries": 3 * 3600,
+    "rsa_queries": 3.5 * 3600,
     "postgis_resume": 600,
 }
 
@@ -55,6 +55,7 @@ class PipelineOrchestrator:
         self._thread = None
         self._wait_phase = None
         self._wait_status = None
+        self._wait_accepted_statuses = set()
         self._wait_deadline = 0
         self._wait_timeout = 0
         self._last_reset_date = None
@@ -90,19 +91,14 @@ class PipelineOrchestrator:
         status = state.get("status", "completed")
 
         if self._is_waiting():
-            if phase == self._wait_phase and status == self._wait_status:
+            if phase == self._wait_phase and status in self._wait_accepted_statuses:
                 self._clear_wait()
                 logging.info("Wachten voltooid: %s=%s", phase, status)
             elif time.time() > self._wait_deadline:
                 timed_out = self._wait_phase
                 timeout_val = self._wait_timeout
                 self._clear_wait()
-                self.pipeline.update(
-                    timed_out or "orchestrator",
-                    "failed",
-                    f"Timeout na {timeout_val}s wachten op {timed_out}",
-                )
-                logging.warning("Timeout na %ss wachten op %s", timeout_val, timed_out)
+                self._handle_wait_timeout(timed_out, timeout_val)
             return
 
         if phase == "idle" and status == "completed":
@@ -129,8 +125,8 @@ class PipelineOrchestrator:
             )
         elif phase == "postgis_sync_paused" and status == "completed":
             self.pipeline.update("rsa_queries", "starting", "RSA queries starten")
-            self._wait_for("rsa_queries", "completed", self.TIMEOUT_RSA)
-        elif phase == "rsa_queries" and status == "completed":
+            self._wait_for("rsa_queries", ["completed", "time-out"], self.TIMEOUT_RSA)
+        elif phase == "rsa_queries" and status in ("completed", "time-out"):
             self._start_postgis_resume()
         elif phase == "postgis_sync_resuming" and status == "running":
             self._wait_for(
@@ -144,16 +140,52 @@ class PipelineOrchestrator:
     def _is_waiting(self):
         return self._wait_phase is not None
 
-    def _wait_for(self, phase, status, timeout):
+    def _wait_for(self, phase, statuses, timeout):
+        """Wacht op een van de gegeven statussen voor de fase.
+        statuses mag een string zijn (één status) of een lijst van strings.
+        """
+        if isinstance(statuses, str):
+            statuses = [statuses]
         self._wait_phase = phase
-        self._wait_status = status
+        self._wait_status = statuses[0]
+        self._wait_accepted_statuses = set(statuses)
         self._wait_deadline = time.time() + timeout
         self._wait_timeout = timeout
-        logging.info("Wachten op %s=%s (timeout %ss)", phase, status, timeout)
+        logging.info(
+            "Wachten op %s met status %s (timeout %ss)",
+            phase,
+            ", ".join(statuses),
+            timeout,
+        )
+
+    def _handle_wait_timeout(self, timed_out_phase: str, timeout_val: int):
+        """Gebruik de juiste timeout-behandeling per fase.
+
+        - postgis_sync_paused: gaat verder zonder pauze (per gebruikerspecificatie)
+        - postgis_sync_running: gaat verder naar drive_upload
+        - arango_sync: zet op failed (veiligheids-net als RSA crash)
+        - rsa_queries: zet op failed (RSA zou self-timeout als time-out moeten rapporteren)
+        """
+        logging.warning(
+            "Timeout na %ss wachten op %s", timeout_val, timed_out_phase
+        )
+        if timed_out_phase in ("postgis_sync_paused", "postgis_sync_running"):
+            self.pipeline.update(
+                timed_out_phase,
+                "completed",
+                f"Timeout ({timeout_val}s); doorgaan zonder wachttijd",
+            )
+        else:
+            self.pipeline.update(
+                timed_out_phase or "orchestrator",
+                "failed",
+                f"Timeout na {timeout_val}s wachten op {timed_out_phase}",
+            )
 
     def _clear_wait(self):
         self._wait_phase = None
         self._wait_status = None
+        self._wait_accepted_statuses = set()
         self._wait_deadline = 0
         self._wait_timeout = 0
 

@@ -79,10 +79,16 @@ Ondersteunde actions:
             drive_to_sharepoint        - Drive → SharePoint marker detectie
 
         Ondersteunde statussen:
-            starting                   - Actie wordt gestart
-            running                    - Actie is bezig
-            completed                  - Actie succesvol voltooid
-            failed                     - Actie mislukt
+            starting                   — Actie wordt gestart
+            running                    — Actie is bezig
+            completed                  — Actie succesvol voltooid
+            failed                     — Actie mislukt
+            aborted                    — Actie werd afgebroken (intern)
+            time-out                   — Actie overschreef de tijgslimiet.
+                                         RSA rapporteert dit voor rsa_queries wanneer
+                                         het 3 uur niet afkrijgt. De orchestrator
+                                         behandelt time-out gelijk aan completed:
+                                         de pipeline gaat verder naar PostGIS resume
 
 Configuratie:
     De directory wordt bepaald door de omgevingsvariabele SQLITE_QUEUE_DIR
