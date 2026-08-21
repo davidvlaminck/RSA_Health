@@ -173,7 +173,7 @@ created_at  moment waarop de job werd aangemaakt
 Maak bijvoorbeeld een bestand:
 
 ```bash
-nano /opt/data-platform/sqlite_queue_client.py
+nano /opt/data-platform/sqlite_writer/pipeline_state.py
 ```
 
 Inhoud:
@@ -249,7 +249,7 @@ conn.close()
 Nieuwe aanpak:
 
 ```python
-from sqlite_queue_client import enqueue_sqlite_job
+from sqlite_writer.pipeline_state import enqueue_sqlite_job
 
 job_id = enqueue_sqlite_job(
     action="insert_measurement",
@@ -717,7 +717,7 @@ Verwijder `failed/` niet automatisch. Die wil je manueel kunnen controleren.
 ```bash
 cd /opt/data-platform
 python3 - <<'PY'
-from sqlite_queue_client import enqueue_sqlite_job
+from sqlite_writer.pipeline_state import enqueue_sqlite_job
 
 job_id = enqueue_sqlite_job(
     action="insert_measurement",
@@ -770,7 +770,7 @@ journalctl -u sqlite_file_writer.service -n 100 --no-pager
 ## Aan producer-kant
 
 - [ ] Alle SQLite write-code verwijderen uit producer-processen.
-- [ ] `sqlite_queue_client.py` toevoegen.
+- [ ] `pipeline_state.py` (met enqueue_sqlite_job) toevoegen.
 - [ ] Producers gebruiken `enqueue_sqlite_job(...)`.
 - [ ] Jobs worden eerst als `.tmp` geschreven.
 - [ ] Jobs worden daarna met `os.replace()` naar `.json` hernoemd.

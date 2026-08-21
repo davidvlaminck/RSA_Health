@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from orchestrator.orchestrator import lifespan as orchestrator_lifespan
 from sqlite_writer.pipeline_state import PipelineState
 from sqlite_writer.sqlite_file_writer import ensure_database_schema, open_database
-from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
+from sqlite_writer.pipeline_state import PipelineState, enqueue_sqlite_job
 
 CONFIG_PATH = Path(__file__).parent.parent / 'config' / "config_rsa_health.json"
 DB_PATH = Path(__file__).parent / "health.db"
@@ -722,7 +722,7 @@ def pipeline_reset():
 
 @app.post("/pipeline/update")
 def pipeline_update(payload: PipelineUpdate):
-    valid_statuses = {"running", "completed", "failed", "aborted"}
+    valid_statuses = {"starting", "running", "completed", "failed", "aborted", "time-out"}
     if payload.status not in valid_statuses:
         return {"error": f"invalid status: {payload.status}"}
     pipeline.update(payload.phase, payload.status, payload.message)

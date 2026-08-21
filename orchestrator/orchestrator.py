@@ -255,9 +255,11 @@ class PipelineOrchestrator:
             state = self.pipeline.get()
             if state and state.get("phase") == "idle" and state.get("status") == "completed":
                 logging.info("Dagelijkse reset: pipeline was al idle")
+                self._clear_wait()
                 return
             self.pipeline.update("idle", "completed", "Dagelijkse reset")
             self._clear_history()
+            self._clear_wait()
             logging.info("Dagelijkse reset uitgevoerd")
 
     def _clear_history(self):

@@ -49,7 +49,7 @@ Externe repos en scripts die de pipeline willen bijwerken, gebruiken **alleen** 
 Gebruik de producer-helper:
 
 ```python
-from sqlite_writer.sqlite_queue_client import enqueue_sqlite_job
+from sqlite_writer.pipeline_state import enqueue_sqlite_job
 
 enqueue_sqlite_job(
     action="update_pipeline_state",
