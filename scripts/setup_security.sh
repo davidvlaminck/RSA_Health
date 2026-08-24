@@ -26,6 +26,17 @@ echo "Copying fail2ban configurations..."
 cp "$(dirname "$0")/filter-rsa-health.conf" /etc/fail2ban/filter.d/
 cp "$(dirname "$0")/jail-rsa-health.conf" /etc/fail2ban/jail.d/
 
+# Deploy logrotate config for PostgreSQL/PostGIS logs
+echo "Deploying PostgreSQL logrotate config..."
+mkdir -p /etc/logrotate.d
+cp "$(dirname "$0")/../logrotate/postgresql-common" /etc/logrotate.d/postgresql-common
+if ! command -v logrotate &> /dev/null; then
+    apt-get update && apt-get install -y logrotate
+fi
+logrotate -d /etc/logrotate.d/postgresql-common >/dev/null 2>&1 \
+    && echo "  logrotate config OK" \
+    || echo "  logrotate config: dry-run warning (non-fatal)"
+
 # Block known scanner IPs with ufw
 echo "Blocking known scanner IPs..."
 BLOCKED_IPS=(
