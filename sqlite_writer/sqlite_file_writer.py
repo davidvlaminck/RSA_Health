@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -40,6 +41,21 @@ def recover_processing_jobs() -> None:
         target = PENDING_DIR / stuck_file.name
         logger.warning("Herstel processing job naar pending: %s", stuck_file.name)
         os.replace(stuck_file, target)
+
+
+def prune_done_queue(retention_days: int, done_dir=None) -> int:
+    target_dir = done_dir if done_dir is not None else DONE_DIR
+    cutoff = time.time() - retention_days * 86400
+    removed = 0
+    for done_file in target_dir.glob("*.json"):
+        try:
+            if done_file.stat().st_mtime < cutoff:
+                done_file.unlink()
+                removed += 1
+        except FileNotFoundError:
+            continue
+    logger.info("Prune: %d done-jobs ouder dan %d dagen verwijderd", removed, retention_days)
+    return removed
 
 
 def open_database() -> sqlite3.Connection:
@@ -255,6 +271,12 @@ def handle_job(conn: sqlite3.Connection, job_path: Path) -> None:
 
 def main() -> None:
     ensure_directories()
+
+    if len(sys.argv) > 1 and sys.argv[1] == "prune":
+        retention_days = int(os.environ.get("SQLITE_QUEUE_DONE_RETENTION_DAYS", "7"))
+        prune_done_queue(retention_days)
+        return
+
     recover_processing_jobs()
 
     conn = open_database()

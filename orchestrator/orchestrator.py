@@ -25,11 +25,19 @@ if str(_ROOT) not in sys.path:
 import sqlite3
 
 from sqlite_writer.pipeline_state import PipelineState
-from sqlite_writer.sqlite_file_writer import ensure_database_schema, open_database
+from sqlite_writer.sqlite_file_writer import (
+    ensure_database_schema,
+    open_database,
+    prune_done_queue,
+)
 
 DB_PATH = Path(__file__).parent.parent / "health.db"
 CONFIG_PATH = DB_PATH.parent.parent / 'config' / "config_rsa_health.json"
 LOCAL_TZ = ZoneInfo("Europe/Brussels")
+
+QUEUE_DIR = Path(os.environ.get("SQLITE_QUEUE_DIR", "/opt/data-platform/sqlite_queue"))
+DONE_DIR = QUEUE_DIR / "done"
+QUEUE_DONE_RETENTION_DAYS = int(os.environ.get("SQLITE_QUEUE_DONE_RETENTION_DAYS", "7"))
 
 
 PIPELINE_TIMEOUTS = {
@@ -59,9 +67,11 @@ class PipelineOrchestrator:
         self._wait_deadline = 0
         self._wait_timeout = 0
         self._last_reset_date = None
+        self._last_prune_date = None
 
     def start(self):
         self.running = True
+        self._prune_queue()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         logging.info("Orchestrator loop gestart")
@@ -84,6 +94,7 @@ class PipelineOrchestrator:
 
     def _tick(self):
         self._daily_reset_check()
+        self._prune_check()
         state = self.pipeline.get()
         if not state:
             return
@@ -261,6 +272,20 @@ class PipelineOrchestrator:
             self._clear_history()
             self._clear_wait()
             logging.info("Dagelijkse reset uitgevoerd")
+
+    def _prune_queue(self):
+        try:
+            removed = prune_done_queue(QUEUE_DONE_RETENTION_DAYS, DONE_DIR)
+            if removed:
+                logging.info("Queue prune: %d done-jobs verwijderd", removed)
+        except Exception as exc:
+            logging.error("Fout bij queue prune: %s", exc)
+
+    def _prune_check(self):
+        now_local = datetime.now(LOCAL_TZ)
+        if now_local.hour == 0 and self._last_prune_date != now_local.date():
+            self._last_prune_date = now_local.date()
+            self._prune_queue()
 
     def _clear_history(self):
         self.pipeline.clear_history()
