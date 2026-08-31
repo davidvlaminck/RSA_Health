@@ -68,7 +68,6 @@ class PipelineOrchestrator:
         self._wait_timeout = 0
         self._last_reset_date = None
         self._last_prune_date = None
-        self._drive_marker_prefix = None
 
     def start(self):
         self.running = True
@@ -120,8 +119,7 @@ class PipelineOrchestrator:
         elif phase == "sharepoint_to_drive" and status == "completed":
             found = self._find_drive_marker("sharepoint_to_drive", "running")
             if found:
-                running_marker, running_name = found
-                self._remember_marker_prefix(running_name)
+                running_marker, _ = found
                 self.pipeline.update(
                     "sharepoint_to_drive", "running", "Nieuwe run marker gedetecteerd"
                 )
@@ -158,6 +156,11 @@ class PipelineOrchestrator:
                         "drive_to_sharepoint", "starting",
                         "Marker geüpload; wacht op Power Automate",
                     )
+            self._check_drive_to_sharepoint_marker()
+        elif phase == "drive_to_sharepoint":
+            # Keep polling for the .completed marker Power Automate places after the
+            # SharePoint step. Without this branch the orchestrator would set the
+            # drive_to_sharepoint phase once and never re-check for completion.
             self._check_drive_to_sharepoint_marker()
 
     def _is_waiting(self):
@@ -215,8 +218,7 @@ class PipelineOrchestrator:
     def _check_sharepoint_marker(self):
         found = self._find_drive_marker("sharepoint_to_drive", "running")
         if found:
-            running_marker, running_name = found
-            self._remember_marker_prefix(running_name)
+            running_marker, _ = found
             state = self.pipeline.get()
             if state and state.get("phase") == "idle" and state.get("status") == "completed":
                 self._clear_history()
@@ -227,8 +229,7 @@ class PipelineOrchestrator:
             self._delete_drive_marker(running_marker)
         found = self._find_drive_marker("sharepoint_to_drive", "completed")
         if found:
-            completed_marker, completed_name = found
-            self._remember_marker_prefix(completed_name)
+            completed_marker, _ = found
             self.pipeline.update(
                 "sharepoint_to_drive", "completed", "Marker gedetecteerd"
             )
@@ -363,6 +364,9 @@ class PipelineOrchestrator:
         folder_id = drive_cfg.get("folder_id")
         if not folder_id:
             return None
+        # Markers are named "<yyyy-mm-dd>_<phase>.<status>" using the local date, so
+        # only consider today's markers (avoids acting on stale markers from prior days).
+        today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
         try:
             query = f"'{folder_id}' in parents and trashed = false"
             results = service.files().list(q=query, fields="files(id, name)").execute()
@@ -374,26 +378,14 @@ class PipelineOrchestrator:
                 parts = base.split("_", 1)
                 if len(parts) != 2:
                     continue
+                if parts[0] != today:
+                    continue
                 file_phase, file_status = parts[1], ext
                 if file_phase == phase and file_status == expected_status:
                     return f["id"], name
         except Exception:
             pass
         return None
-
-    @staticmethod
-    def _marker_prefix(name: str) -> str:
-        """Prefix before the first '_' of a marker filename (e.g. 'rsa' in 'rsa_sharepoint_to_drive.completed')."""
-        base, _ = name.rsplit(".", 1)
-        parts = base.split("_", 1)
-        return parts[0] if len(parts) == 2 else ""
-
-    def _remember_marker_prefix(self, name: str) -> None:
-        """Mirror the prefix used by the reverse (SharePoint->Drive) marker so the
-        Drive->SharePoint marker we create uses the exact same convention."""
-        prefix = self._marker_prefix(name)
-        if prefix:
-            self._drive_marker_prefix = prefix
 
     def _delete_drive_marker(self, file_id):
         service = self._get_drive_service()
@@ -418,7 +410,10 @@ class PipelineOrchestrator:
         folder_id = drive_cfg.get("folder_id")
         if not folder_id:
             return False
-        prefix = getattr(self, "_drive_marker_prefix", None) or "rsa"
+        # Marker filename is "<yyyy-mm-dd>_<phase>.<status>" using the local date,
+        # matching the convention Power Automate uses (e.g. "2026-08-31_drive_to_sharepoint.starting").
+        # Derived from the clock so it is always correct, also after a restart.
+        prefix = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
         name = f"{prefix}_{phase}.{status}"
         try:
             import io
