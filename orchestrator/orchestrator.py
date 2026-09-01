@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -49,6 +50,11 @@ PIPELINE_TIMEOUTS = {
 
 POLL_INTERVAL_SECONDS = 30
 
+REPORTS_GIT_DIR = Path(__file__).resolve().parent.parent.parent / "RSA"
+REPORTS_REFRESH_INTERVAL_SECONDS = int(
+    os.environ.get("REPORTS_REFRESH_INTERVAL_SECONDS", "3600")
+)
+
 
 class PipelineOrchestrator:
     TIMEOUT_ARANGO = PIPELINE_TIMEOUTS["arango_sync"]
@@ -68,6 +74,7 @@ class PipelineOrchestrator:
         self._wait_timeout = 0
         self._last_reset_date = None
         self._last_prune_date = None
+        self._last_reports_refresh = None
 
     def start(self):
         self.running = True
@@ -95,6 +102,7 @@ class PipelineOrchestrator:
     def _tick(self):
         self._daily_reset_check()
         self._prune_check()
+        self._reports_refresh_check()
         state = self.pipeline.get()
         if not state:
             return
@@ -310,14 +318,66 @@ class PipelineOrchestrator:
             self._last_prune_date = now_local.date()
             self._prune_queue()
 
+    def _reports_refresh_check(self):
+        interval = REPORTS_REFRESH_INTERVAL_SECONDS
+        now = time.time()
+        if (
+            self._last_reports_refresh is not None
+            and (now - self._last_reports_refresh) < interval
+        ):
+            return
+        self._last_reports_refresh = now
+        self._git_pull_reports()
+
+    def _git_pull_reports(self):
+        git_path = REPORTS_GIT_DIR
+        if not git_path.is_dir():
+            logging.warning("Reports git directory niet gevonden: %s", git_path)
+            return
+        if not (git_path / ".git").exists():
+            logging.warning("Reports pad is geen git repo: %s", git_path)
+            return
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(git_path), "pull"],
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+            if result.returncode == 0:
+                out = result.stdout.strip()
+                if not out or "up to date" in out.lower():
+                    logging.info("Reports git pull: reeds up to date")
+                else:
+                    last_line = out.splitlines()[-1] if out else "voltooid"
+                    logging.info("Reports git pull: %s", last_line)
+            else:
+                stderr = result.stderr.strip() or result.stdout.strip()
+                logging.warning(
+                    "Reports git pull mislukt (code %s): %s", result.returncode, stderr
+                )
+        except subprocess.TimeoutExpired:
+            logging.warning("Reports git pull timed out")
+        except Exception as exc:
+            logging.warning("Reports git pull fout: %s", exc)
+
     def _clear_history(self):
         self.pipeline.clear_history()
 
-    def _load_drive_config(self):
+    def _load_config(self):
         if not CONFIG_PATH.exists():
             return None
-        with CONFIG_PATH.open("r", encoding="utf-8") as f:
-            cfg = json.load(f)
+        try:
+            with CONFIG_PATH.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _load_drive_config(self):
+        cfg = self._load_config()
+        if not cfg:
+            return None
         drive = cfg.get("drive", {})
         if not drive:
             return None
