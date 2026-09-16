@@ -29,5 +29,12 @@
   "services": [
     {"name": "rsa_health.service", "label": "RSA Health API"},
     {"name": "cron.service", "label": "Cron"}
-  ]
+  ],
+  "rate_limit": {
+    "max_requests": 60,
+    "window": 60
+  },
+  "security": {
+    "log_access_token": "generate-a-random-32-char-token-here"
+  }
 }

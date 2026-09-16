@@ -475,7 +475,8 @@
         document.getElementById('log-download').addEventListener('click', () => {
             const type = document.getElementById('log-type').value;
             const range = document.getElementById('log-range').value;
-            window.location.href = `/logs?type=${encodeURIComponent(type)}&range=${encodeURIComponent(range)}`;
+            const token = window.RSA_LOG_TOKEN || '';
+            window.location.href = `/logs?type=${encodeURIComponent(type)}&range=${encodeURIComponent(range)}&token=${encodeURIComponent(token)}`;
         });
 
         function setRange(range) {

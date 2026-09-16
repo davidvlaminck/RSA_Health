@@ -14,7 +14,7 @@ import psutil
 import psycopg2
 from arango import ArangoClient
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 
 from orchestrator.orchestrator import lifespan as orchestrator_lifespan
@@ -174,6 +174,7 @@ pipeline = PipelineState(DB_PATH)
 
 _BLOCKED_IPS = {
     "213.209.159.175",
+    "213.209.159.154",
     "139.135.43.104",
     "186.236.254.56",
     "81.19.219.216",
@@ -187,11 +188,20 @@ _BLOCKED_IPS = {
     "185.209.15.199",
     "45.198.224.26",
     "20.65.193.201",
+    "80.94.95.211",
+    "45.67.211.147",
+    "94.154.46.243",
+    "85.239.151.82",
+    "151.243.18.111",
+    "34.186.7.117",
+    "98.98.47.133",
+    "172.105.69.26",
+    "93.152.221.68",
 }
 
 
 class _RateLimiter:
-    def __init__(self, max_requests: int = 120, window: int = 60):
+    def __init__(self, max_requests: int = 60, window: int = 60):
         self._max = max_requests
         self._window = window
         self._hits: dict[str, list[float]] = {}
@@ -217,7 +227,7 @@ def _get_rate_limit_config() -> tuple[int, int]:
         window = rate_cfg.get("window", 60)
         return max_requests, window
     except Exception:
-        return 120, 60
+        return 60, 60
 
 
 _rate_limiter = _RateLimiter(*_get_rate_limit_config())
@@ -288,7 +298,7 @@ def _snapshot_loop(stop_event: threading.Event):
 
     while not stop_event.is_set():
         try:
-            config, _ = load_config()
+            config, _, _ = load_config()
             server = check_server()
             net = check_network()
             db_results = []
@@ -327,7 +337,12 @@ async def lifespan(app: FastAPI):
     snapshot_thread.join(timeout=5)
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.middleware("http")(_security_middleware)
 
 
@@ -497,10 +512,10 @@ def _cached(cache_key, fn, *args, **kwargs):
 
 def load_config():
     if not CONFIG_PATH.exists():
-        return [], {}
+        return [], {}, None
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         cfg = json.load(f)
-    return cfg.get("databases", []), cfg.get("logs", {}).get("directory", "")
+    return cfg.get("databases", []), cfg.get("logs", {}).get("directory", ""), cfg.get("security", {}).get("log_access_token")
 
 
 def bytes_to_gb(value_bytes: int) -> float:
@@ -677,7 +692,7 @@ def _check_postgresql(cfg: dict) -> dict:
 
 @app.get("/health")
 def health():
-    config, _ = load_config()
+    config, _, _ = load_config()
     server = check_server()
     net = check_network()
     response = {
@@ -740,6 +755,14 @@ def favicon():
 
 @app.get("/")
 def index():
+    _, _, token = load_config()
+    if token:
+        html = Path("static/index.html").read_text(encoding="utf-8")
+        html = html.replace(
+            "</body>",
+            f'<script>window.RSA_LOG_TOKEN="{token}";</script>\n</body>',
+        )
+        return HTMLResponse(html)
     return FileResponse("static/index.html")
 
 
@@ -753,8 +776,13 @@ LOG_FILES = {
 
 
 @app.get("/logs")
-def download_log(type: str = "all", range: str = "1d"):
-    _, logs_dir = load_config()
+def download_log(request: Request, type: str = "all", range: str = "1d", token: str = ""):
+    _, _, expected_token = load_config()
+    if expected_token and token != expected_token:
+        client_ip = request.client.host if request.client else "unknown"
+        logging.warning("Unauthorized /logs access attempt from %s", client_ip)
+        return Response(content="Forbidden", status_code=403)
+    _, logs_dir, _ = load_config()
     if not logs_dir:
         return {"error": "logs directory not configured"}
     base = Path(logs_dir)

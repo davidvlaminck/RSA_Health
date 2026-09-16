@@ -99,6 +99,14 @@ The following scanner IPs are blocked by default (see `main.py`):
 - `185.209.15.199` — `.env` scanner
 - `45.198.224.26` — `/login` scanner
 - `20.65.193.201` — `/portal/redlion` scanner
+- `213.209.159.175` / `213.209.159.154` — `.env` and SSRF scanner
+- `80.94.95.211` — `.env` / `phpinfo` / SSRF / file inclusion scanner
+- `45.67.211.147` — path traversal `/etc/passwd` scanner
+- `94.154.46.243` — `.env` scanner
+- `85.239.151.82` — SSRF to cloud metadata endpoints
+- `151.243.18.111` — probe scanner
+- `34.186.7.117` — SSRF to cloud metadata endpoints
+- `98.98.47.133` — botnet malware scanner (.bins, .ps1, .arc)
 
 To add more, edit `_BLOCKED_IPS` in `main.py` or use ufw directly:
 ```bash
