@@ -23,8 +23,8 @@ mkdir -p /etc/fail2ban/filter.d
 
 # Copy filter and jail configs
 echo "Copying fail2ban configurations..."
-cp "$(dirname "$0")/filter-rsa-health.conf" /etc/fail2ban/filter.d/
-cp "$(dirname "$0")/jail-rsa-health.conf" /etc/fail2ban/jail.d/
+cp "$(dirname "$0")/../fail2ban/filter-rsa-health.conf" /etc/fail2ban/filter.d/rsa-health.conf
+cp "$(dirname "$0")/../fail2ban/jail-rsa-health.conf" /etc/fail2ban/jail.d/rsa-health.conf
 
 # Deploy logrotate config for PostgreSQL/PostGIS logs
 echo "Deploying PostgreSQL logrotate config..."
@@ -49,6 +49,17 @@ BLOCKED_IPS=(
     185.209.15.199
     45.198.224.26
     20.65.193.201
+    213.209.159.175
+    213.209.159.154
+    80.94.95.211
+    45.67.211.147
+    94.154.46.243
+    85.239.151.82
+    151.243.18.111
+    34.186.7.117
+    98.98.47.133
+    172.105.69.26
+    93.152.221.68
 )
 
 for ip in "${BLOCKED_IPS[@]}"; do
